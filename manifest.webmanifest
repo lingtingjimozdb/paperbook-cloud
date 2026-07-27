@@ -1,0 +1,9 @@
+{
+  "name": "PaperBook Cloud",
+  "short_name": "PaperBook",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#ece9e2",
+  "theme_color": "#2f6555",
+  "icons": []
+}
