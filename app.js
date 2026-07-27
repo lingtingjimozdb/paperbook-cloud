@@ -152,17 +152,47 @@ async function forgotPassword() {
 async function bootstrap() {
   setSync("正在连接云端…");
 
-  // Ensure every authenticated account has a private workspace.
-  // This also repairs accounts created before the original database trigger existed.
-  const { data: ensuredWorkspaceId, error: ensureError } = await supabase
-    .rpc("ensure_private_workspace");
+  // Prefer reading the membership directly. This keeps the app usable even
+  // when Supabase has not refreshed its RPC schema cache yet.
+  let { data: membership, error: memberError } = await supabase
+    .from("workspace_members")
+    .select("workspace_id")
+    .eq("user_id", session.user.id)
+    .order("created_at")
+    .limit(1)
+    .maybeSingle();
 
-  if (ensureError) throw ensureError;
-  if (!ensuredWorkspaceId) {
-    throw new Error("无法创建私人工作区，请先执行数据库修复 SQL。");
+  if (memberError) throw memberError;
+
+  // Only use the repair RPC when no membership exists.
+  if (!membership?.workspace_id) {
+    const { data: repairedId, error: repairError } = await supabase
+      .rpc("ensure_private_workspace");
+
+    if (!repairError && repairedId) {
+      membership = { workspace_id: repairedId };
+    } else {
+      // Re-check once because the SQL backfill may have completed while
+      // this page was loading.
+      const retry = await supabase
+        .from("workspace_members")
+        .select("workspace_id")
+        .eq("user_id", session.user.id)
+        .order("created_at")
+        .limit(1)
+        .maybeSingle();
+
+      if (retry.error) throw retry.error;
+      membership = retry.data;
+
+      if (!membership?.workspace_id) {
+        const details = repairError?.message ? `：${repairError.message}` : "";
+        throw new Error(`账户空间尚未建立${details}`);
+      }
+    }
   }
 
-  workspaceId = ensuredWorkspaceId;
+  workspaceId = membership.workspace_id;
   await loadNotebooks();
   setSync("已连接云端");
 }
