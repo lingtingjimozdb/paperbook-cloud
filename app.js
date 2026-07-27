@@ -86,7 +86,8 @@ function showAuth() {
 function showApp() {
   $("authScreen").classList.add("hidden");
   $("app").classList.remove("hidden");
-  $("userEmail").textContent = displayAccount(session?.user?.email ?? "");
+  const metadataName = session?.user?.user_metadata?.display_name;
+  $("userEmail").textContent = metadataName || displayAccount(session?.user?.email ?? "");
 }
 
 function setMode(next) {
@@ -150,18 +151,18 @@ async function forgotPassword() {
 
 async function bootstrap() {
   setSync("正在连接云端…");
-  const { data, error } = await supabase
-    .from("workspace_members")
-    .select("workspace_id, workspaces(name)")
-    .eq("user_id", session.user.id)
-    .limit(1)
-    .maybeSingle();
 
-  if (error) throw error;
-  if (!data) {
-    throw new Error("尚未创建私人工作区。请确认数据库初始化 SQL 已执行。");
+  // Ensure every authenticated account has a private workspace.
+  // This also repairs accounts created before the original database trigger existed.
+  const { data: ensuredWorkspaceId, error: ensureError } = await supabase
+    .rpc("ensure_private_workspace");
+
+  if (ensureError) throw ensureError;
+  if (!ensuredWorkspaceId) {
+    throw new Error("无法创建私人工作区，请先执行数据库修复 SQL。");
   }
-  workspaceId = data.workspace_id;
+
+  workspaceId = ensuredWorkspaceId;
   await loadNotebooks();
   setSync("已连接云端");
 }
