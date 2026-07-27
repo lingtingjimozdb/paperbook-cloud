@@ -271,6 +271,55 @@
 
   window.__paperbookSetAndroidTab = setTab;
 
+  window.__paperbookAppendScanText = function (title, text) {
+    const titleInput = document.getElementById("titleInput");
+    const editor = document.getElementById("editor");
+    if (!titleInput || !editor) return false;
+
+    const safeTitle = String(title || "扫描文字");
+    const safeText = String(text || "").trim();
+
+    if (!titleInput.value || titleInput.value === "第一页" || titleInput.value === "无标题页") {
+      titleInput.value = safeTitle;
+      titleInput.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+
+    const section = document.createElement("section");
+    section.className = "paperbook-scan-block";
+    section.style.margin = "18px 0";
+    section.style.padding = "13px";
+    section.style.border = "1px solid var(--line, #ddd)";
+    section.style.borderRadius = "10px";
+    section.style.background = "var(--soft, #f3f7f5)";
+
+    const heading = document.createElement("h2");
+    heading.textContent = safeTitle;
+    heading.style.margin = "0 0 10px";
+    heading.style.fontSize = "18px";
+
+    const body = document.createElement("div");
+    body.style.whiteSpace = "pre-wrap";
+    body.style.lineHeight = "1.8";
+    body.textContent = safeText || "（未识别到文字）";
+
+    section.appendChild(heading);
+    section.appendChild(body);
+    editor.appendChild(section);
+    editor.appendChild(document.createElement("p"));
+    editor.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      inputType: "insertText",
+      data: safeText
+    }));
+
+    if (window.__paperbookSetAndroidTab) {
+      window.__paperbookSetAndroidTab("editor");
+    }
+    editor.scrollIntoView({ behavior: "smooth", block: "start" });
+    return true;
+  };
+
+
   nav.addEventListener("click", event => {
     const button = event.target.closest("button");
     if (!button) return;
@@ -295,6 +344,9 @@
     const visible = app && !app.classList.contains("hidden");
     nav.classList.toggle("show", Boolean(visible));
     if (visible && !document.body.dataset.pbtab) setTab("books");
+    if (window.AndroidBridge && typeof window.AndroidBridge.setScannerVisible === "function") {
+      window.AndroidBridge.setScannerVisible(Boolean(visible));
+    }
   }
 
   new MutationObserver(syncNavVisibility).observe(document.body, {
