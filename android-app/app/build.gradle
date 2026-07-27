@@ -1,0 +1,32 @@
+plugins {
+    id "com.android.application"
+}
+
+android {
+    namespace "com.paperbook.cloud"
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.paperbook.cloud"
+        minSdk 24
+        targetSdk 35
+        versionCode 1
+        versionName "1.0.0-beta"
+    }
+
+    buildTypes {
+        debug {
+            applicationIdSuffix ".beta"
+            versionNameSuffix "-debug"
+        }
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

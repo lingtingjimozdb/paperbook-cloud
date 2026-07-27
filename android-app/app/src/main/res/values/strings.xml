@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PaperBook</string>
+    <string name="offline_title">暂时无法连接</string>
+    <string name="offline_message">请检查手机网络，然后点击重新加载。</string>
+</resources>
