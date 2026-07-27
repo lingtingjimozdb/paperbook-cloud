@@ -26,6 +26,55 @@ function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 }
 
+
+function normalizeAccount(value) {
+  return String(value || "").normalize("NFKC").trim().toLocaleLowerCase("zh-CN");
+}
+
+function encodeAccount(value) {
+  const bytes = new TextEncoder().encode(normalizeAccount(value));
+  let binary = "";
+  bytes.forEach(byte => binary += String.fromCharCode(byte));
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function decodeAccount(value) {
+  try {
+    let encoded = value.replace(/^u\./, "").replace(/-/g, "+").replace(/_/g, "/");
+    while (encoded.length % 4) encoded += "=";
+    const binary = atob(encoded);
+    const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return value;
+  }
+}
+
+function accountToInternalEmail(account) {
+  const normalized = normalizeAccount(account);
+  if (normalized.includes("@")) return normalized;
+  return `u.${encodeAccount(normalized)}@paperbook.example`;
+}
+
+function displayAccount(email) {
+  const value = String(email || "");
+  if (value.startsWith("u.") && value.endsWith("@paperbook.example")) {
+    return decodeAccount(value.slice(0, -"@paperbook.example".length));
+  }
+  return value;
+}
+
+function validateAccount(account) {
+  const normalized = normalizeAccount(account);
+  if (normalized.length < 2) return "账号名至少 2 个字符。";
+  if (normalized.length > 32) return "账号名最多 32 个字符。";
+  if (/[\r\n\t]/.test(normalized)) return "账号名包含无效字符。";
+  return "";
+}
+
 function setSync(text) { $("syncStatus").textContent = text; }
 function setSave(text) { $("saveState").textContent = text; }
 
@@ -37,7 +86,7 @@ function showAuth() {
 function showApp() {
   $("authScreen").classList.add("hidden");
   $("app").classList.remove("hidden");
-  $("userEmail").textContent = session?.user?.email ?? "";
+  $("userEmail").textContent = displayAccount(session?.user?.email ?? "");
 }
 
 function setMode(next) {
@@ -46,37 +95,57 @@ function setMode(next) {
   $("signupTab").classList.toggle("active", next === "signup");
   $("authSubmit").textContent = next === "login" ? "登录" : "注册";
   $("passwordInput").autocomplete = next === "login" ? "current-password" : "new-password";
+  $("emailInput").placeholder = next === "login" ? "输入账号名" : "设置一个账号名";
 }
 
 async function authSubmit(event) {
   event.preventDefault();
-  const email = $("emailInput").value.trim();
+
+  const account = $("emailInput").value;
+  const accountError = validateAccount(account);
+  if (accountError) return toast(accountError, 4200);
+
+  const normalizedAccount = normalizeAccount(account);
+  const email = accountToInternalEmail(normalizedAccount);
   const password = $("passwordInput").value;
+
   $("authSubmit").disabled = true;
   try {
     if (mode === "login") {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
     } else {
-      const { data, error } = await supabase.auth.signUp({ email, password });
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: { display_name: normalizedAccount }
+        }
+      });
       if (error) throw error;
-      if (!data.session) toast("注册成功，请检查邮箱并完成验证。", 5000);
-      else toast("注册成功。");
+
+      if (data.session) {
+        toast("注册成功，已自动登录。");
+      } else {
+        toast("账号已创建，但项目仍要求邮箱确认。请关闭 Supabase 的 Confirm Email。", 7000);
+      }
     }
   } catch (error) {
-    toast(error.message || "操作失败", 4500);
+    const message = String(error?.message || "");
+    if (/invalid login credentials/i.test(message)) {
+      toast("账号或密码不正确。", 4500);
+    } else if (/user already registered/i.test(message)) {
+      toast("这个账号已经存在，请直接登录。", 4500);
+    } else {
+      toast(message || "操作失败", 5000);
+    }
   } finally {
     $("authSubmit").disabled = false;
   }
 }
 
 async function forgotPassword() {
-  const email = $("emailInput").value.trim();
-  if (!email) return toast("请先输入邮箱。");
-  const redirectTo = location.origin + location.pathname;
-  const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
-  if (error) toast(error.message, 4500);
-  else toast("重置密码邮件已发送。", 4500);
+  toast("账号名登录不依赖邮箱。请妥善保存密码；测试版忘记密码时需由管理员处理。", 6500);
 }
 
 async function bootstrap() {

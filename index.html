@@ -22,15 +22,15 @@
       </div>
 
       <form id="authForm">
-        <label>邮箱</label>
-        <input id="emailInput" type="email" autocomplete="email" required placeholder="name@example.com" />
+        <label>账号名</label>
+        <input id="emailInput" type="text" autocomplete="username" required minlength="2" maxlength="32" placeholder="例如：dali奥特曼" />
         <label>密码</label>
         <input id="passwordInput" type="password" autocomplete="current-password" required minlength="6" placeholder="至少 6 位" />
         <button id="authSubmit" class="primary full" type="submit">登录</button>
       </form>
 
-      <button id="forgotBtn" class="link-btn">忘记密码</button>
-      <p class="auth-tip">注册后，每个账户拥有独立私人空间。不同用户的数据由数据库权限隔离。</p>
+      <button id="forgotBtn" class="link-btn">账号使用说明</button>
+      <p class="auth-tip">无需 QQ 邮箱和验证码。输入账号名与密码即可注册；电脑和手机使用同一账号会访问同一云端笔记。</p>
     </div>
   </section>
 
