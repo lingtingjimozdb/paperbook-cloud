@@ -1,5 +1,5 @@
 
-const CACHE="paperbook-cloud-v9-1-ai-restore";
+const CACHE="paperbook-cloud-v9-2-email-auth";
 const ASSETS=["./","./index.html","./styles.css","./app.js","./manifest.webmanifest","./og.png"];
 self.addEventListener("install",e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS))));
 self.addEventListener("activate",e=>e.waitUntil(
