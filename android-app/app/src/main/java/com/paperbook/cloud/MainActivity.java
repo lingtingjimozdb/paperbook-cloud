@@ -69,7 +69,7 @@ import java.util.zip.ZipOutputStream;
 
 public class MainActivity extends Activity {
     private static final String APP_URL =
-            "https://lingtingjimozdb.github.io/paperbook-cloud/?app=android&v=sidebar-v9";
+            "https://lingtingjimozdb.github.io/paperbook-cloud/?app=android&v=ai-restore-v9-1";
     private static final int FILE_CHOOSER_REQUEST = 1001;
     private static final int STORAGE_PERMISSION_REQUEST = 1002;
     private static final int DOCUMENT_SCAN_REQUEST = 1003;
@@ -563,7 +563,7 @@ public class MainActivity extends Activity {
             String stamp
     ) {
         if (index >= imageUris.size()) {
-            onRecognitionCompleted(aggregate.toString(), mode, stamp);
+            onRecognitionCompleted(aggregate.toString(), mode, stamp, imageUris);
             return;
         }
 
@@ -651,7 +651,8 @@ public class MainActivity extends Activity {
     private void onRecognitionCompleted(
             String text,
             ScanMode mode,
-            String stamp
+            String stamp,
+            List<Uri> imageUris
     ) {
         String normalizedText = text == null ? "" : text.trim();
 
@@ -663,13 +664,14 @@ public class MainActivity extends Activity {
                         normalizedText.getBytes(StandardCharsets.UTF_8),
                         "text/plain"
                 );
-                appendTextToCurrentNote(
+                sendNativeScanPagesToWeb(
                         "扫描文档 " + stamp,
-                        normalizedText
+                        normalizedText,
+                        imageUris
                 );
                 Toast.makeText(
                         this,
-                        "识别完成，文字已加入当前笔记，并保存原件。",
+                        "设备识别完成，已进入 AI 原图恢复工作台，并保存原件。",
                         Toast.LENGTH_LONG
                 ).show();
                 break;
@@ -696,6 +698,64 @@ public class MainActivity extends Activity {
             default:
                 break;
         }
+    }
+
+    private void sendNativeScanPagesToWeb(
+            String title,
+            String aggregateText,
+            List<Uri> imageUris
+    ) {
+        new Thread(() -> {
+            String[] pageTexts = aggregateText == null
+                    ? new String[0]
+                    : aggregateText.split(
+                            "\\s*===== 第 \\d+ 页 =====\\s*"
+                    );
+            for (int index = 0; index < imageUris.size(); index++) {
+                try (InputStream input = getContentResolver().openInputStream(imageUris.get(index))) {
+                    if (input == null) continue;
+                    Bitmap original = BitmapFactory.decodeStream(input);
+                    if (original == null) continue;
+                    int maxSide = Math.max(original.getWidth(), original.getHeight());
+                    float scale = maxSide > 1800 ? 1800f / maxSide : 1f;
+                    Bitmap prepared = scale < 1f
+                            ? Bitmap.createScaledBitmap(
+                                    original,
+                                    Math.round(original.getWidth() * scale),
+                                    Math.round(original.getHeight() * scale),
+                                    true
+                            )
+                            : original;
+                    ByteArrayOutputStream output = new ByteArrayOutputStream();
+                    prepared.compress(Bitmap.CompressFormat.JPEG, 92, output);
+                    String dataUrl = "data:image/jpeg;base64," +
+                            Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP);
+                    int textIndex = index + 1;
+                    String pageText = textIndex < pageTexts.length
+                            ? pageTexts[textIndex].trim()
+                            : "";
+                    int pageIndex = index;
+                    String javascript =
+                            "window.__paperbookReceiveNativeScanPage && " +
+                            "window.__paperbookReceiveNativeScanPage(" +
+                            JSONObject.quote(title) + "," +
+                            JSONObject.quote(pageText) + "," +
+                            JSONObject.quote(dataUrl) + "," +
+                            pageIndex + "," +
+                            imageUris.size() +
+                            ");";
+                    runOnUiThread(() -> webView.evaluateJavascript(javascript, null));
+                    if (prepared != original) prepared.recycle();
+                    original.recycle();
+                } catch (Exception error) {
+                    runOnUiThread(() -> Toast.makeText(
+                            this,
+                            "扫描页送入 AI 工作台失败：" + error.getMessage(),
+                            Toast.LENGTH_LONG
+                    ).show());
+                }
+            }
+        }).start();
     }
 
     private void appendTextToCurrentNote(String title, String text) {
