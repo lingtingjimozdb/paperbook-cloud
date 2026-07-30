@@ -16,6 +16,11 @@ let activePageId = null;
 let saveTimer = null;
 let promptResolver = null;
 let scanObjectUrl = null;
+let scanFiles = [];
+let activeScanIndex = 0;
+let scanFilter = "enhance";
+let scanRotation = 0;
+let scanKind = "document";
 let dictationRecognition = null;
 let meetingRecognition = null;
 let dictationBaseText = "";
@@ -25,6 +30,8 @@ let meetingTimerId = null;
 let speechUtterance = null;
 let speechVoices = [];
 let latestMeetingSummary = "";
+let schedules = JSON.parse(localStorage.getItem("paperbook_schedules") || "[]");
+let showCompletedSchedules = false;
 
 function toast(message, timeout=2600) {
   $("toast").textContent = message;
@@ -583,38 +590,209 @@ function closeMore() {
 
 function openScanner() {
   closeMore();
-  if (window.AndroidBridge && typeof window.AndroidBridge.openScanner === "function") {
-    window.AndroidBridge.openScanner();
-    return;
-  }
+  const mobile = matchMedia("(max-width: 800px)").matches || /Android|iPhone|iPad/i.test(navigator.userAgent);
+  $("scannerDeviceHint").textContent = mobile ? "拍照扫描，连续识别并整理为文档" : "批量导入图片，准确识别并整理为文档";
+  $("cameraScanBtn").classList.toggle("hidden", !mobile);
+  $("scanActionTitle").textContent = mobile ? "拍照或导入文档" : "导入文档图片";
   $("scanDialog").showModal();
 }
 
 function chooseScanImage(useCamera) {
-  $("scanPicker").toggleAttribute("capture", useCamera);
+  if (useCamera && window.AndroidBridge && typeof window.AndroidBridge.openScanner === "function") {
+    window.AndroidBridge.openScanner();
+    return;
+  }
+  if (useCamera) $("scanPicker").setAttribute("capture", "environment");
+  else $("scanPicker").removeAttribute("capture");
+  $("scanPicker").toggleAttribute("multiple", !useCamera);
   $("scanPicker").click();
 }
 
-function previewScan(file) {
-  if (scanObjectUrl) URL.revokeObjectURL(scanObjectUrl);
-  scanObjectUrl = URL.createObjectURL(file);
-  $("scanPreviewImage").src = scanObjectUrl;
-  $("scanPreview").classList.remove("hidden");
+function addScanFiles(files) {
+  const images = [...files].filter(file => file.type.startsWith("image/"));
+  if (!images.length) return toast("请选择图片文件。");
+  scanFiles.push(...images.map(file => ({file, url:URL.createObjectURL(file), rotation:0, text:""})));
+  activeScanIndex = Math.max(0, scanFiles.length - images.length);
+  $("scanEmpty").classList.add("hidden");
+  $("scanWorkspace").classList.remove("hidden");
+  renderScanPages();
+  renderScanCanvas();
+}
+
+function renderScanPages() {
+  $("scanPageCount").textContent = `${scanFiles.length} 页`;
+  $("scanPageList").innerHTML = scanFiles.map((item,index)=>`
+    <div class="scan-page ${index===activeScanIndex?"active":""}" data-scan-page="${index}">
+      <img src="${item.url}" alt="第 ${index+1} 页" /><span>第 ${index+1} 页</span>
+      <button type="button" data-remove-scan="${index}" aria-label="删除第 ${index+1} 页">×</button>
+    </div>`).join("");
+}
+
+async function renderScanCanvas() {
+  const item = scanFiles[activeScanIndex];
+  if (!item) return;
+  const image = new Image();
+  image.onload = () => {
+    const canvas = $("scanCanvas");
+    const angle = item.rotation || 0;
+    const sideways = angle % 180 !== 0;
+    const maxSide = 1800;
+    const ratio = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
+    const width = Math.round(image.naturalWidth * ratio);
+    const height = Math.round(image.naturalHeight * ratio);
+    canvas.width = sideways ? height : width;
+    canvas.height = sideways ? width : height;
+    const context = canvas.getContext("2d", {willReadFrequently:true});
+    context.save();
+    context.translate(canvas.width/2,canvas.height/2);
+    context.rotate(angle*Math.PI/180);
+    context.filter = scanFilter==="gray" ? "grayscale(1) contrast(1.15)" :
+      scanFilter==="bw" ? "grayscale(1) contrast(2.1)" :
+      scanFilter==="enhance" ? "contrast(1.16) saturate(.92) brightness(1.06)" : "none";
+    context.drawImage(image,-width/2,-height/2,width,height);
+    context.restore();
+  };
+  image.src = item.url;
+  $("ocrResult").value = item.text || "";
+}
+
+function canvasDataUrl(quality=.9) {
+  return $("scanCanvas").toDataURL("image/jpeg", quality);
+}
+
+async function runLocalOcr() {
+  if (window.AndroidBridge && typeof window.AndroidBridge.openScanner === "function") {
+    window.AndroidBridge.openScanner();
+    return;
+  }
+  setOcrStatus("设备识别需手机 App", "warn");
+  toast("电脑端请使用 AI 精准识别；手机 App 支持离线快速识别。", 3800);
+}
+
+function setOcrStatus(text, className="") {
+  $("ocrStatus").textContent = text;
+  $("ocrStatus").className = `ocr-badge ${className}`.trim();
+}
+
+async function runAiOcr() {
+  const key = $("ocrApiKey").value.trim();
+  if (!key) {
+    $("ocrApiKey").closest("details").open = true;
+    $("ocrApiKey").focus();
+    return toast("请先填写免费的 OpenRouter API 密钥。", 3600);
+  }
+  if (!scanFiles.length) return;
+  localStorage.setItem("paperbook_ocr_key", key);
+  localStorage.setItem("paperbook_ocr_model", $("ocrModel").value.trim() || "openrouter/free");
+  setOcrStatus("AI 识别中…", "working");
+  $("aiOcrBtn").disabled = true;
+  try {
+    const kindPrompt = {
+      document:"普通文档",book:"书籍页面",handwriting:"手写笔记",table:"表格",
+      card:"证件或名片",receipt:"票据或发票"
+    }[scanKind];
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method:"POST",
+      headers:{
+        "Authorization":`Bearer ${key}`,"Content-Type":"application/json",
+        "HTTP-Referer":location.origin,"X-Title":"PaperBook Scan"
+      },
+      body:JSON.stringify({
+        model:$("ocrModel").value.trim() || "openrouter/free",
+        messages:[{role:"user",content:[
+          {type:"text",text:`你是严谨的 OCR 校对专家。逐字读取这张${kindPrompt}图片。保留原有段落、标题、编号和标点；表格使用 Markdown 表格；看不清的字符用【待确认】标记，绝不猜测。只输出识别后的正文，不要解释。`},
+          {type:"image_url",image_url:{url:canvasDataUrl(.9)}}
+        ]}],
+        temperature:0
+      })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data?.error?.message || "模型服务请求失败");
+    const text = data?.choices?.[0]?.message?.content?.trim();
+    if (!text) throw new Error("模型没有返回识别文字");
+    scanFiles[activeScanIndex].text = text;
+    $("ocrResult").value = text;
+    setOcrStatus(text.includes("【待确认】") ? "需复核" : "已识别", text.includes("【待确认】") ? "warn" : "done");
+  } catch (error) {
+    setOcrStatus("识别失败", "warn");
+    toast(error.message || "AI 识别失败，请稍后重试。", 5000);
+  } finally {
+    $("aiOcrBtn").disabled = false;
+  }
 }
 
 function addScanRecord() {
+  const currentText = $("ocrResult").value.trim();
+  if (scanFiles[activeScanIndex]) scanFiles[activeScanIndex].text = currentText;
+  const allText = scanFiles.map((item,index)=>item.text ? `<h3>第 ${index+1} 页</h3><p>${esc(item.text).replace(/\n/g,"<br>")}</p>` : "").join("");
   const block = document.createElement("section");
   block.className = "paperbook-scan-block";
-  const heading = document.createElement("h2");
-  heading.textContent = "扫描记录";
-  const note = document.createElement("p");
-  note.textContent = `已于 ${new Date().toLocaleString("zh-CN")} 在本机完成图片采集。原图未上传云端。`;
-  block.append(heading, note);
+  block.innerHTML = `<h2>扫描文档</h2>${allText || `<p>已于 ${new Date().toLocaleString("zh-CN")} 完成 ${scanFiles.length} 页图片采集，尚未识别文字。</p>`}`;
   $("editor").append(block, document.createElement("p"));
   $("editor").dispatchEvent(new Event("input", { bubbles:true }));
   $("scanDialog").close();
   setMobileTab("editor");
-  toast("已加入扫描记录。");
+  toast("扫描内容已加入当前文档。");
+}
+
+function openPlanner() {
+  closeMore();
+  $("plannerBackdrop").classList.remove("hidden");
+  $("plannerPanel").classList.remove("hidden");
+  const next = new Date(Date.now()+60*60*1000);
+  next.setMinutes(Math.ceil(next.getMinutes()/15)*15,0,0);
+  $("scheduleTime").value = `${next.getFullYear()}-${String(next.getMonth()+1).padStart(2,"0")}-${String(next.getDate()).padStart(2,"0")}T${String(next.getHours()).padStart(2,"0")}:${String(next.getMinutes()).padStart(2,"0")}`;
+  renderSchedules();
+}
+
+function closePlanner() {
+  $("plannerBackdrop").classList.add("hidden");
+  $("plannerPanel").classList.add("hidden");
+}
+
+function saveSchedules() {
+  localStorage.setItem("paperbook_schedules", JSON.stringify(schedules));
+}
+
+function renderSchedules() {
+  const now = new Date();
+  $("plannerToday").textContent = new Intl.DateTimeFormat("zh-CN",{month:"long",day:"numeric",weekday:"long"}).format(now);
+  const sameDay = value => {
+    const date=new Date(value);
+    return date.getFullYear()===now.getFullYear()&&date.getMonth()===now.getMonth()&&date.getDate()===now.getDate();
+  };
+  $("todayEventCount").textContent=schedules.filter(item=>sameDay(item.time)).length;
+  $("todoCount").textContent=schedules.filter(item=>!item.done).length;
+  const visible=schedules.filter(item=>showCompletedSchedules||!item.done).sort((a,b)=>new Date(a.time)-new Date(b.time));
+  $("scheduleList").innerHTML=visible.length ? visible.map(item=>{
+    const date=new Date(item.time);
+    const day=sameDay(item.time)?"今天":`${date.getMonth()+1}/${date.getDate()}`;
+    return `<article class="schedule-item ${item.done?"done":""}">
+      <div class="schedule-time">${String(date.getHours()).padStart(2,"0")}:${String(date.getMinutes()).padStart(2,"0")}<span>${day}</span></div>
+      <div class="schedule-body"><strong>${esc(item.title)}</strong><span>${esc(item.detail||`提前 ${item.reminder} 分钟提醒`)}</span></div>
+      <div class="schedule-actions"><button type="button" data-toggle-schedule="${item.id}" title="完成">${item.done?"↶":"✓"}</button><button type="button" data-delete-schedule="${item.id}" title="删除">×</button></div>
+    </article>`;
+  }).join("") : `<div class="planner-empty">还没有安排。把下一件重要的事放进时间轴吧。</div>`;
+}
+
+async function enableNotifications() {
+  if (!("Notification" in window)) return toast("此浏览器不支持系统通知。");
+  const permission=await Notification.requestPermission();
+  toast(permission==="granted" ? "提醒已开启。保持网页打开即可接收通知。" : "未获得通知权限。");
+}
+
+function checkScheduleReminders() {
+  const now=Date.now();
+  let changed=false;
+  schedules.forEach(item=>{
+    const remindAt=new Date(item.time).getTime()-Number(item.reminder||0)*60000;
+    if(!item.done&&!item.notified&&now>=remindAt&&now<new Date(item.time).getTime()+3600000){
+      item.notified=true;changed=true;
+      if("Notification" in window&&Notification.permission==="granted") new Notification(`PaperBook：${item.title}`,{body:item.detail||"日程即将开始"});
+      toast(`提醒：${item.title}`,5000);
+    }
+  });
+  if(changed)saveSchedules();
 }
 
 function openVoiceStudio(tab="dictation") {
@@ -952,18 +1130,54 @@ $("logoutBtn").onclick=async()=>{await saveCurrent();await supabase.auth.signOut
 function toggleTheme(){const dark=localStorage.getItem("paperbook_theme")==="dark";localStorage.setItem("paperbook_theme",dark?"light":"dark");applyTheme()}
 $("scanCenterBtn").onclick=openScanner;
 $("voiceStudioBtn").onclick=()=>openVoiceStudio("dictation");
+$("plannerBtn").onclick=openPlanner;
 $("mobileNav").onclick=e=>{const button=e.target.closest("[data-mobile-tab]");if(button)setMobileTab(button.dataset.mobileTab)};
 $("closeMoreBtn").onclick=closeMore;
 $("moreBackdrop").onclick=closeMore;
 $("moreScanBtn").onclick=openScanner;
 $("moreVoiceBtn").onclick=()=>openVoiceStudio("dictation");
+$("morePlannerBtn").onclick=openPlanner;
 $("moreThemeBtn").onclick=()=>{toggleTheme();closeMore()};
 $("moreExportBtn").onclick=()=>{closeMore();exportBackup()};
 $("moreImportBtn").onclick=()=>{closeMore();$("importPicker").click()};
 $("moreLogoutBtn").onclick=async()=>{closeMore();await saveCurrent();await supabase.auth.signOut()};
 $("cameraScanBtn").onclick=()=>chooseScanImage(true);
 $("fileScanBtn").onclick=()=>chooseScanImage(false);
-$("scanPicker").onchange=e=>{const file=e.target.files[0];if(file)previewScan(file);e.target.value=""};
+$("appendScanBtn").onclick=()=>chooseScanImage(false);
+$("closeScannerBtn").onclick=()=>$("scanDialog").close();
+$("scanPicker").onchange=e=>{addScanFiles(e.target.files);e.target.value=""};
+$("scanPageList").onclick=e=>{
+  const remove=e.target.closest("[data-remove-scan]");
+  if(remove){
+    const index=Number(remove.dataset.removeScan);
+    URL.revokeObjectURL(scanFiles[index].url);
+    scanFiles.splice(index,1);
+    activeScanIndex=Math.min(activeScanIndex,scanFiles.length-1);
+    if(!scanFiles.length){$("scanWorkspace").classList.add("hidden");$("scanEmpty").classList.remove("hidden")}
+    else{renderScanPages();renderScanCanvas()}
+    return;
+  }
+  const page=e.target.closest("[data-scan-page]");
+  if(page){
+    if(scanFiles[activeScanIndex])scanFiles[activeScanIndex].text=$("ocrResult").value;
+    activeScanIndex=Number(page.dataset.scanPage);
+    renderScanPages();renderScanCanvas();
+  }
+};
+document.querySelectorAll("[data-scan-filter]").forEach(button=>button.onclick=()=>{
+  scanFilter=button.dataset.scanFilter;
+  document.querySelectorAll("[data-scan-filter]").forEach(item=>item.classList.toggle("active",item===button));
+  renderScanCanvas();
+});
+document.querySelectorAll("[data-scan-kind]").forEach(button=>button.onclick=()=>{
+  scanKind=button.dataset.scanKind;
+  document.querySelectorAll("[data-scan-kind]").forEach(item=>item.classList.toggle("active",item===button));
+});
+$("rotateScanBtn").onclick=()=>{if(scanFiles[activeScanIndex]){scanFiles[activeScanIndex].rotation=(scanFiles[activeScanIndex].rotation+90)%360;renderScanCanvas()}};
+$("localOcrBtn").onclick=runLocalOcr;
+$("aiOcrBtn").onclick=runAiOcr;
+$("ocrResult").oninput=()=>{if(scanFiles[activeScanIndex])scanFiles[activeScanIndex].text=$("ocrResult").value};
+$("copyOcrBtn").onclick=async()=>{const text=$("ocrResult").value;if(!text)return toast("当前没有可复制的文字。");await navigator.clipboard.writeText(text);toast("识别文字已复制。")};
 $("addScanNoteBtn").onclick=addScanRecord;
 $("closeVoiceBtn").onclick=closeVoiceStudio;
 $("voiceBackdrop").onclick=closeVoiceStudio;
@@ -983,6 +1197,31 @@ $("speechPauseBtn").onclick=toggleSpeechPause;
 $("speechStopBtn").onclick=stopSpeech;
 $("speechRate").oninput=()=>{$("speechRateValue").textContent=`${Number($("speechRate").value).toFixed(1)}×`};
 $("speechPitch").oninput=()=>{$("speechPitchValue").textContent=Number($("speechPitch").value).toFixed(1)};
+$("ocrApiKey").value=localStorage.getItem("paperbook_ocr_key")||"";
+$("ocrModel").value=localStorage.getItem("paperbook_ocr_model")||"openrouter/free";
+$("closePlannerBtn").onclick=closePlanner;
+$("plannerBackdrop").onclick=closePlanner;
+$("enableNotifyBtn").onclick=enableNotifications;
+$("scheduleForm").onsubmit=e=>{
+  e.preventDefault();
+  schedules.push({
+    id:crypto.randomUUID(),title:$("scheduleTitle").value.trim(),
+    time:$("scheduleTime").value,reminder:Number($("scheduleReminder").value),
+    detail:$("scheduleDetail").value.trim(),done:false,notified:false
+  });
+  saveSchedules();e.target.reset();renderSchedules();toast("日程已保存。");
+};
+$("scheduleList").onclick=e=>{
+  const toggle=e.target.closest("[data-toggle-schedule]");
+  const remove=e.target.closest("[data-delete-schedule]");
+  if(toggle){const item=schedules.find(value=>value.id===toggle.dataset.toggleSchedule);if(item)item.done=!item.done}
+  if(remove)schedules=schedules.filter(value=>value.id!==remove.dataset.deleteSchedule);
+  saveSchedules();renderSchedules();
+};
+$("showAllSchedulesBtn").onclick=()=>{showCompletedSchedules=!showCompletedSchedules;$("showAllSchedulesBtn").textContent=showCompletedSchedules?"仅待办":"全部";renderSchedules()};
+renderSchedules();
+checkScheduleReminders();
+setInterval(checkScheduleReminders,30000);
 
 document.querySelectorAll("[data-cmd]").forEach(b=>b.onclick=()=>{document.execCommand(b.dataset.cmd,false,null);$("editor").focus();scheduleSave()});
 document.querySelectorAll("[data-block]").forEach(b=>b.onclick=()=>{document.execCommand("formatBlock",false,b.dataset.block);$("editor").focus();scheduleSave()});
