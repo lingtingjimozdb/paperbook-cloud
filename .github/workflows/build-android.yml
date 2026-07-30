@@ -1,5 +1,8 @@
 name: Build PaperBook Android APK
 
+permissions:
+  contents: write
+
 on:
   workflow_dispatch:
   push:
@@ -49,3 +52,14 @@ jobs:
           name: PaperBook-Android-V9-Complete
           path: android-app/PaperBook-Android-V9-Complete.apk
           retention-days: 30
+
+      - name: Publish V9 Android release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v9.0.0-android
+          name: PaperBook Android V9
+          body: |
+            PaperBook V9 安卓安装包。
+            包含原生文档扫描、中文/英文 OCR，并连接 V9 云端文档工作台。
+          files: android-app/PaperBook-Android-V9-Complete.apk
