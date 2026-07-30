@@ -570,6 +570,22 @@ function applyTheme() {
   document.body.classList.toggle("dark",localStorage.getItem("paperbook_theme")==="dark");
 }
 
+function applySidebarState() {
+  const collapsed=localStorage.getItem("paperbook_sidebar_collapsed")==="true";
+  document.body.classList.toggle("nav-collapsed",collapsed);
+  const button=$("toggleSidebarBtn");
+  if(button){
+    button.textContent=collapsed?"☰ 展开侧栏":"☰ 收起侧栏";
+    button.setAttribute("aria-expanded",String(!collapsed));
+    button.title=collapsed?"展开笔记本与页面目录（Alt + \\）":"收起笔记本与页面目录（Alt + \\）";
+  }
+}
+
+function toggleSidebar() {
+  localStorage.setItem("paperbook_sidebar_collapsed",String(!document.body.classList.contains("nav-collapsed")));
+  applySidebarState();
+}
+
 function setMobileTab(tab) {
   if (tab === "more") return openMore();
   document.body.dataset.mobileTab = tab;
@@ -1236,6 +1252,7 @@ function toggleTheme(){const dark=localStorage.getItem("paperbook_theme")==="dar
 $("scanCenterBtn").onclick=openScanner;
 $("voiceStudioBtn").onclick=()=>openVoiceStudio("dictation");
 $("plannerBtn").onclick=openPlanner;
+$("toggleSidebarBtn").onclick=toggleSidebar;
 $("mobileNav").onclick=e=>{const button=e.target.closest("[data-mobile-tab]");if(button)setMobileTab(button.dataset.mobileTab)};
 $("closeMoreBtn").onclick=closeMore;
 $("moreBackdrop").onclick=closeMore;
@@ -1370,6 +1387,7 @@ document.addEventListener("click",event=>{
 },true);
 
 document.addEventListener("keydown",e=>{
+  if(e.altKey&&e.key==="\\"){e.preventDefault();toggleSidebar()}
   if(e.ctrlKey&&e.key.toLowerCase()==="s"){e.preventDefault();saveCurrent()}
   if(e.ctrlKey&&e.key.toLowerCase()==="f"){e.preventDefault();$("searchInput").focus()}
   if(e.ctrlKey&&e.key.toLowerCase()==="n"){e.preventDefault();newPage()}
@@ -1385,6 +1403,7 @@ supabase.auth.onAuthStateChange(async (_event,newSession)=>{
 });
 
 applyTheme();
+applySidebarState();
 loadSpeechVoices();
 if ("speechSynthesis" in window) speechSynthesis.onvoiceschanged=loadSpeechVoices;
 setMobileTab("books");
