@@ -69,7 +69,7 @@ import java.util.zip.ZipOutputStream;
 
 public class MainActivity extends Activity {
     private static final String APP_URL =
-            "https://lingtingjimozdb.github.io/paperbook-cloud/?app=android&v=ai-restore-v9-1";
+            "https://lingtingjimozdb.github.io/paperbook-cloud/?app=android&v=email-auth-v9-2";
     private static final int FILE_CHOOSER_REQUEST = 1001;
     private static final int STORAGE_PERMISSION_REQUEST = 1002;
     private static final int DOCUMENT_SCAN_REQUEST = 1003;
