@@ -10,8 +10,8 @@ android {
         applicationId "com.paperbook.cloud"
         minSdk 24
         targetSdk 35
-        versionCode 10
-        versionName "9.1.0-ai-restore"
+        versionCode 11
+        versionName "9.2.0-email-auth"
     }
 
     buildTypes {
