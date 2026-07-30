@@ -44,22 +44,23 @@ jobs:
       - name: Build installable debug APK
         run: |
           gradle --no-daemon :app:assembleDebug
-          cp app/build/outputs/apk/debug/app-debug.apk PaperBook-Android-V9-Complete.apk
+          cp app/build/outputs/apk/debug/app-debug.apk PaperBook-Android-V9.1-AI-Scan.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: PaperBook-Android-V9-Complete
-          path: android-app/PaperBook-Android-V9-Complete.apk
+          name: PaperBook-Android-V9.1-AI-Scan
+          path: android-app/PaperBook-Android-V9.1-AI-Scan.apk
           retention-days: 30
 
-      - name: Publish V9 Android release
+      - name: Publish V9.1 Android release
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v9.0.0-android
-          name: PaperBook Android V9
+          tag_name: v9.1.0-ai-scan
+          name: PaperBook Android V9.1 · AI 扫描恢复
           body: |
-            PaperBook V9 安卓安装包。
-            包含原生文档扫描、中文/英文 OCR，并连接 V9 云端文档工作台。
-          files: android-app/PaperBook-Android-V9-Complete.apk
+            PaperBook V9.1 安卓安装包。
+            原生扫描结果进入 AI 原图恢复工作台，结合设备 OCR 草稿和视觉模型纠正错字、漏字及版面。
+            支持本机免费 OCR、OpenRouter 免费视觉模型和 Gemini 免费额度。
+          files: android-app/PaperBook-Android-V9.1-AI-Scan.apk
