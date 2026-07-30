@@ -15,6 +15,16 @@ let activeNotebookId = null;
 let activePageId = null;
 let saveTimer = null;
 let promptResolver = null;
+let scanObjectUrl = null;
+let dictationRecognition = null;
+let meetingRecognition = null;
+let dictationBaseText = "";
+let meetingBaseText = "";
+let meetingStartedAt = null;
+let meetingTimerId = null;
+let speechUtterance = null;
+let speechVoices = [];
+let latestMeetingSummary = "";
 
 function toast(message, timeout=2600) {
   $("toast").textContent = message;
@@ -24,6 +34,26 @@ function toast(message, timeout=2600) {
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+function sanitizeHtml(value) {
+  const template = document.createElement("template");
+  template.innerHTML = String(value || "");
+  template.content.querySelectorAll("script,style,iframe,object,embed,link,meta").forEach(node => node.remove());
+  template.content.querySelectorAll("*").forEach(node => {
+    [...node.attributes].forEach(attribute => {
+      const name = attribute.name.toLowerCase();
+      const content = attribute.value.trim().toLowerCase();
+      if (
+        name.startsWith("on") ||
+        name === "srcdoc" ||
+        ((name === "href" || name === "src") && /^(javascript|vbscript|data:text\/html):/.test(content))
+      ) {
+        node.removeAttribute(attribute.name);
+      }
+    });
+  });
+  return template.innerHTML;
 }
 
 
@@ -79,11 +109,16 @@ function setSync(text) { $("syncStatus").textContent = text; }
 function setSave(text) { $("saveState").textContent = text; }
 
 function showAuth() {
+  document.body.classList.remove("app-ready");
+  closeMore();
+  closeVoiceStudio();
+  stopSpeech();
   $("authScreen").classList.remove("hidden");
   $("app").classList.add("hidden");
 }
 
 function showApp() {
+  document.body.classList.add("app-ready");
   $("authScreen").classList.add("hidden");
   $("app").classList.remove("hidden");
   const metadataName = session?.user?.user_metadata?.display_name;
@@ -318,7 +353,8 @@ function openPage(id) {
   if (!p) return;
   $("titleInput").value = p.title || "";
   $("tagsInput").value = (p.content_json?.tags || []).join(", ");
-  $("editor").innerHTML = p.content_json?.html || "";
+  $("editor").innerHTML = sanitizeHtml(p.content_json?.html || "");
+  updateWordCount();
   renderPages();
   renderPageNumbers();
   setSave("已保存");
@@ -341,7 +377,7 @@ function renderPageNumbers() {
 }
 
 function captureEditor() {
-  const html = $("editor").innerHTML;
+  const html = sanitizeHtml($("editor").innerHTML);
   const temp = document.createElement("div");
   temp.innerHTML = html;
   return {
@@ -352,7 +388,13 @@ function captureEditor() {
   };
 }
 
+function updateWordCount() {
+  const count = ($("editor").textContent || "").replace(/\s/g, "").length;
+  $("wordCount").textContent = `${count} 字`;
+}
+
 function scheduleSave() {
+  updateWordCount();
   setSave("正在保存…");
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveCurrent, 700);
@@ -488,8 +530,11 @@ async function importBackup(file) {
       workspace_id:workspaceId,notebook_id:notebookId,
       created_by:session.user.id,updated_by:session.user.id,
       title:oldPage.title||"无标题页",
-      content_json:oldPage.content_json||{html:""},
-      plain_text:oldPage.plain_text||"",
+      content_json:{
+        ...(oldPage.content_json || {}),
+        html:sanitizeHtml(oldPage.content_json?.html || "")
+      },
+      plain_text:String(oldPage.plain_text || ""),
       sort_order:oldPage.sort_order||0
     });
     if(error)return toast(error.message,4500);
@@ -517,6 +562,371 @@ function applyTheme() {
   document.body.classList.toggle("dark",localStorage.getItem("paperbook_theme")==="dark");
 }
 
+function setMobileTab(tab) {
+  if (tab === "more") return openMore();
+  document.body.dataset.mobileTab = tab;
+  $("mobileNav").querySelectorAll("[data-mobile-tab]").forEach(button => {
+    button.classList.toggle("active", button.dataset.mobileTab === tab);
+  });
+}
+window.__paperbookSetMobileTab = setMobileTab;
+
+function openMore() {
+  $("moreBackdrop").classList.remove("hidden");
+  $("moreSheet").classList.remove("hidden");
+}
+
+function closeMore() {
+  $("moreBackdrop").classList.add("hidden");
+  $("moreSheet").classList.add("hidden");
+}
+
+function openScanner() {
+  closeMore();
+  if (window.AndroidBridge && typeof window.AndroidBridge.openScanner === "function") {
+    window.AndroidBridge.openScanner();
+    return;
+  }
+  $("scanDialog").showModal();
+}
+
+function chooseScanImage(useCamera) {
+  $("scanPicker").toggleAttribute("capture", useCamera);
+  $("scanPicker").click();
+}
+
+function previewScan(file) {
+  if (scanObjectUrl) URL.revokeObjectURL(scanObjectUrl);
+  scanObjectUrl = URL.createObjectURL(file);
+  $("scanPreviewImage").src = scanObjectUrl;
+  $("scanPreview").classList.remove("hidden");
+}
+
+function addScanRecord() {
+  const block = document.createElement("section");
+  block.className = "paperbook-scan-block";
+  const heading = document.createElement("h2");
+  heading.textContent = "扫描记录";
+  const note = document.createElement("p");
+  note.textContent = `已于 ${new Date().toLocaleString("zh-CN")} 在本机完成图片采集。原图未上传云端。`;
+  block.append(heading, note);
+  $("editor").append(block, document.createElement("p"));
+  $("editor").dispatchEvent(new Event("input", { bubbles:true }));
+  $("scanDialog").close();
+  setMobileTab("editor");
+  toast("已加入扫描记录。");
+}
+
+function openVoiceStudio(tab="dictation") {
+  closeMore();
+  $("voiceBackdrop").classList.remove("hidden");
+  $("voiceStudio").classList.remove("hidden");
+  setVoiceTab(tab);
+  if (tab === "speech") loadCurrentDocumentForSpeech();
+}
+
+function closeVoiceStudio() {
+  $("voiceBackdrop").classList.add("hidden");
+  $("voiceStudio").classList.add("hidden");
+}
+
+function setVoiceTab(tab) {
+  document.querySelectorAll("[data-voice-tab]").forEach(button => {
+    button.classList.toggle("active", button.dataset.voiceTab === tab);
+  });
+  document.querySelectorAll("[data-voice-pane]").forEach(pane => {
+    pane.classList.toggle("active", pane.dataset.voicePane === tab);
+  });
+}
+
+function speechRecognitionConstructor() {
+  return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+}
+
+function createRecognition(kind) {
+  const Recognition = speechRecognitionConstructor();
+  if (!Recognition) {
+    toast("当前浏览器不支持语音识别。建议使用最新版 Chrome、Edge 或 Android App。", 6500);
+    return null;
+  }
+  const recognition = new Recognition();
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.lang = kind === "meeting" ? $("dictationLanguage").value : $("dictationLanguage").value;
+  recognition.onresult = event => {
+    let finalText = "";
+    let interimText = "";
+    for (let index=event.resultIndex; index<event.results.length; index++) {
+      const text = event.results[index][0].transcript;
+      if (event.results[index].isFinal) finalText += text + "。";
+      else interimText += text;
+    }
+    if (kind === "meeting") {
+      if (finalText) meetingBaseText += finalText;
+      $("meetingTranscript").value = meetingBaseText + interimText;
+    } else {
+      if (finalText) dictationBaseText += finalText;
+      $("dictationText").value = dictationBaseText + interimText;
+    }
+  };
+  recognition.onerror = event => {
+    const friendly = event.error === "not-allowed" ? "没有获得麦克风权限。" :
+      event.error === "no-speech" ? "暂时没有检测到语音。" : `语音识别中断：${event.error}`;
+    toast(friendly, 5000);
+    if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+      if (kind === "meeting") {
+        meetingStartedAt = null;
+        meetingRecognition = null;
+        clearInterval(meetingTimerId);
+        setMeetingRecording(false);
+      } else {
+        dictationRecognition = null;
+        setDictationRecording(false);
+      }
+    }
+  };
+  recognition.onend = () => {
+    if (kind === "meeting" && meetingStartedAt) {
+      try { recognition.start(); } catch {}
+      return;
+    }
+    if (kind === "dictation") setDictationRecording(false);
+  };
+  return recognition;
+}
+
+function setDictationRecording(active) {
+  $("dictationRecordBtn").classList.toggle("recording", active);
+  $("dictationState").classList.toggle("recording-text", active);
+  $("dictationState").textContent = active ? "正在聆听…" : "点击开始口述";
+}
+
+function toggleDictation() {
+  if (dictationRecognition) {
+    dictationRecognition.stop();
+    dictationRecognition = null;
+    setDictationRecording(false);
+    return;
+  }
+  dictationBaseText = $("dictationText").value.trim();
+  if (dictationBaseText && !/[。！？\n]$/.test(dictationBaseText)) dictationBaseText += "。";
+  dictationRecognition = createRecognition("dictation");
+  if (!dictationRecognition) return;
+  dictationRecognition.onend = () => {
+    dictationRecognition = null;
+    setDictationRecording(false);
+  };
+  try {
+    dictationRecognition.start();
+    setDictationRecording(true);
+  } catch {
+    dictationRecognition = null;
+    toast("语音输入启动失败，请稍后重试。");
+  }
+}
+
+function textToParagraphs(text) {
+  return String(text || "").split(/\n+/).map(line => line.trim()).filter(Boolean);
+}
+
+function appendTextToEditor(title, text) {
+  const section = document.createElement("section");
+  section.className = "paperbook-voice-block";
+  if (title) {
+    const heading = document.createElement("h2");
+    heading.textContent = title;
+    section.appendChild(heading);
+  }
+  textToParagraphs(text).forEach(line => {
+    const paragraph = document.createElement("p");
+    paragraph.textContent = line;
+    section.appendChild(paragraph);
+  });
+  $("editor").append(section, document.createElement("p"));
+  $("editor").dispatchEvent(new Event("input", { bubbles:true }));
+  setMobileTab("editor");
+}
+
+function insertDictation() {
+  const text = $("dictationText").value.trim();
+  if (!text) return toast("还没有可写入的口述文字。");
+  appendTextToEditor("语音记录", text);
+  closeVoiceStudio();
+  toast("语音内容已写入当前文档。");
+}
+
+function formatDuration(totalSeconds) {
+  const hours = String(Math.floor(totalSeconds / 3600)).padStart(2,"0");
+  const minutes = String(Math.floor(totalSeconds % 3600 / 60)).padStart(2,"0");
+  const seconds = String(totalSeconds % 60).padStart(2,"0");
+  return `${hours}:${minutes}:${seconds}`;
+}
+
+function updateMeetingTimer() {
+  if (!meetingStartedAt) return;
+  $("meetingTimer").textContent = formatDuration(Math.floor((Date.now()-meetingStartedAt)/1000));
+}
+
+function setMeetingRecording(active) {
+  $("meetingIndicator").classList.toggle("live", active);
+  $("meetingState").textContent = active ? "正在实时转录" : "会议转录已暂停";
+  $("meetingRecordBtn").textContent = active ? "结束会议转录" : "继续会议转录";
+  $("meetingMarkerBtn").disabled = !active;
+}
+
+function toggleMeetingRecording() {
+  if (meetingRecognition) {
+    meetingStartedAt = null;
+    meetingRecognition.stop();
+    meetingRecognition = null;
+    clearInterval(meetingTimerId);
+    setMeetingRecording(false);
+    $("meetingState").textContent = "会议转录已结束";
+    $("meetingRecordBtn").textContent = "继续会议转录";
+    return;
+  }
+  meetingBaseText = $("meetingTranscript").value.trim();
+  if (meetingBaseText && !meetingBaseText.endsWith("\n")) meetingBaseText += "\n";
+  meetingRecognition = createRecognition("meeting");
+  if (!meetingRecognition) return;
+  meetingStartedAt = Date.now();
+  meetingTimerId = setInterval(updateMeetingTimer,1000);
+  try {
+    meetingRecognition.start();
+    setMeetingRecording(true);
+  } catch {
+    meetingRecognition = null;
+    meetingStartedAt = null;
+    clearInterval(meetingTimerId);
+    toast("会议转录启动失败，请稍后重试。");
+  }
+}
+
+function addMeetingMarker() {
+  const stamp = $("meetingTimer").textContent;
+  meetingBaseText = $("meetingTranscript").value.trimEnd() + `\n【重点 ${stamp}】`;
+  $("meetingTranscript").value = meetingBaseText;
+}
+
+function meetingDocumentText() {
+  const title = $("meetingTitle").value.trim() || `会议记录 ${new Date().toLocaleDateString("zh-CN")}`;
+  const transcript = $("meetingTranscript").value.trim();
+  return {title,transcript};
+}
+
+function meetingToDocument() {
+  const {title,transcript} = meetingDocumentText();
+  if (!transcript) return toast("还没有会议转录内容。");
+  appendTextToEditor(title, transcript);
+  closeVoiceStudio();
+  toast("完整会议转录已写入当前文档。");
+}
+
+function uniqueItems(items, limit=6) {
+  return [...new Set(items.map(item=>item.trim()).filter(item=>item.length>3))].slice(0,limit);
+}
+
+function summarizeMeeting() {
+  const {title,transcript} = meetingDocumentText();
+  if (transcript.length < 12) return toast("会议内容太少，暂时无法整理。");
+  const sentences = (transcript.match(/[^。！？!?\n]+[。！？!?]?/g) || []).map(item=>item.trim()).filter(Boolean);
+  const decisions = uniqueItems(sentences.filter(item=>/(决定|确定|结论|一致|通过|采用|确认)/.test(item)));
+  const actions = uniqueItems(sentences.filter(item=>/(需要|负责|跟进|完成|提交|截止|安排|下一步|待办)/.test(item)));
+  const risks = uniqueItems(sentences.filter(item=>/(风险|问题|阻塞|困难|待确认|不确定|延期|缺少)/.test(item)));
+  const highlights = uniqueItems(sentences.filter(item=>item.includes("【重点") || item.length >= 28),5);
+  const overview = uniqueItems(sentences.filter(item=>!item.includes("【重点")),3);
+  const fallback = ["本次会议已完成转录，请结合原文确认关键结论。"];
+  const sections = [
+    ["会议概览", overview.length ? overview : fallback],
+    ["关键结论", decisions.length ? decisions : ["暂未识别到明确结论。"]],
+    ["行动项", actions.length ? actions : ["暂未识别到明确行动项，请人工补充负责人和截止时间。"]],
+    ["重点与议题", highlights.length ? highlights : ["暂无额外重点标记。"]],
+    ["风险与待确认", risks.length ? risks : ["暂未识别到明确风险。"]]
+  ];
+  latestMeetingSummary = `# ${title}\n\n` + sections.map(([heading,items]) =>
+    `## ${heading}\n${items.map(item=>`- ${item.replace(/^【重点[^】]*】/,"").trim()}`).join("\n")}`
+  ).join("\n\n");
+  $("meetingSummary").innerHTML = sections.map(([heading,items]) =>
+    `<h4>${esc(heading)}</h4><ul>${items.map(item=>`<li>${esc(item.replace(/^【重点[^】]*】/,"").trim())}</li>`).join("")}</ul>`
+  ).join("");
+  $("meetingSummaryCard").classList.remove("hidden");
+  toast("会议内容已完成智能整理。");
+}
+
+async function copyMeetingSummary() {
+  if (!latestMeetingSummary) return;
+  try {
+    await navigator.clipboard.writeText(latestMeetingSummary);
+    toast("会议纪要已复制。");
+  } catch {
+    toast("复制失败，请手动选择纪要内容。");
+  }
+}
+
+function summaryToDocument() {
+  if (!latestMeetingSummary) return;
+  appendTextToEditor($("meetingTitle").value.trim() || "会议纪要", latestMeetingSummary.replace(/^# .+\n+/,""));
+  closeVoiceStudio();
+  toast("会议纪要已保存到当前文档。");
+}
+
+function loadSpeechVoices() {
+  if (!("speechSynthesis" in window)) return;
+  speechVoices = speechSynthesis.getVoices();
+  const select = $("voiceSelect");
+  const previous = select.value;
+  select.innerHTML = "";
+  speechVoices
+    .sort((a,b)=>(a.lang.startsWith("zh")?-1:1)-(b.lang.startsWith("zh")?-1:1))
+    .forEach((voice,index) => {
+      const option = document.createElement("option");
+      option.value = String(index);
+      option.textContent = `${voice.name} · ${voice.lang}`;
+      select.appendChild(option);
+    });
+  if (previous && [...select.options].some(option=>option.value===previous)) select.value = previous;
+}
+
+function loadCurrentDocumentForSpeech() {
+  const text = $("editor").textContent.trim();
+  $("speechText").value = text;
+  $("speechTitle").textContent = $("titleInput").value.trim() || "朗读当前文档";
+  $("speechMeta").textContent = text ? `${text.replace(/\s/g,"").length} 字 · 已准备` : "当前文档暂无可朗读文字";
+}
+
+function playSpeech() {
+  if (!("speechSynthesis" in window)) return toast("当前设备不支持文档朗读。",5000);
+  const text = $("speechText").value.trim();
+  if (!text) return toast("没有可朗读的文字。");
+  speechSynthesis.cancel();
+  speechUtterance = new SpeechSynthesisUtterance(text);
+  const selectedVoice = speechVoices[Number($("voiceSelect").value)];
+  if (selectedVoice) speechUtterance.voice = selectedVoice;
+  speechUtterance.rate = Number($("speechRate").value);
+  speechUtterance.pitch = Number($("speechPitch").value);
+  speechUtterance.lang = selectedVoice?.lang || "zh-CN";
+  speechUtterance.onstart = () => $("speechMeta").textContent = "正在朗读…";
+  speechUtterance.onend = () => $("speechMeta").textContent = "朗读完成";
+  speechUtterance.onerror = () => $("speechMeta").textContent = "朗读已停止";
+  speechSynthesis.speak(speechUtterance);
+}
+
+function toggleSpeechPause() {
+  if (!("speechSynthesis" in window)) return;
+  if (speechSynthesis.paused) {
+    speechSynthesis.resume();
+    $("speechMeta").textContent = "正在朗读…";
+  } else {
+    speechSynthesis.pause();
+    $("speechMeta").textContent = "已暂停";
+  }
+}
+
+function stopSpeech() {
+  if ("speechSynthesis" in window) speechSynthesis.cancel();
+  $("speechMeta").textContent = "已停止";
+}
+
 $("loginTab").onclick=()=>setMode("login");
 $("signupTab").onclick=()=>setMode("signup");
 $("authForm").onsubmit=authSubmit;
@@ -539,7 +949,40 @@ $("exportBtn").onclick=exportBackup;
 $("importBtn").onclick=()=>$("importPicker").click();
 $("importPicker").onchange=e=>{const f=e.target.files[0];if(f)importBackup(f);e.target.value=""};
 $("logoutBtn").onclick=async()=>{await saveCurrent();await supabase.auth.signOut()};
-$("themeBtn").onclick=()=>{const dark=localStorage.getItem("paperbook_theme")==="dark";localStorage.setItem("paperbook_theme",dark?"light":"dark");applyTheme()};
+function toggleTheme(){const dark=localStorage.getItem("paperbook_theme")==="dark";localStorage.setItem("paperbook_theme",dark?"light":"dark");applyTheme()}
+$("scanCenterBtn").onclick=openScanner;
+$("voiceStudioBtn").onclick=()=>openVoiceStudio("dictation");
+$("mobileNav").onclick=e=>{const button=e.target.closest("[data-mobile-tab]");if(button)setMobileTab(button.dataset.mobileTab)};
+$("closeMoreBtn").onclick=closeMore;
+$("moreBackdrop").onclick=closeMore;
+$("moreScanBtn").onclick=openScanner;
+$("moreVoiceBtn").onclick=()=>openVoiceStudio("dictation");
+$("moreThemeBtn").onclick=()=>{toggleTheme();closeMore()};
+$("moreExportBtn").onclick=()=>{closeMore();exportBackup()};
+$("moreImportBtn").onclick=()=>{closeMore();$("importPicker").click()};
+$("moreLogoutBtn").onclick=async()=>{closeMore();await saveCurrent();await supabase.auth.signOut()};
+$("cameraScanBtn").onclick=()=>chooseScanImage(true);
+$("fileScanBtn").onclick=()=>chooseScanImage(false);
+$("scanPicker").onchange=e=>{const file=e.target.files[0];if(file)previewScan(file);e.target.value=""};
+$("addScanNoteBtn").onclick=addScanRecord;
+$("closeVoiceBtn").onclick=closeVoiceStudio;
+$("voiceBackdrop").onclick=closeVoiceStudio;
+document.querySelectorAll("[data-voice-tab]").forEach(button=>button.onclick=()=>setVoiceTab(button.dataset.voiceTab));
+$("dictationRecordBtn").onclick=toggleDictation;
+$("clearDictationBtn").onclick=()=>{$("dictationText").value="";dictationBaseText=""};
+$("insertDictationBtn").onclick=insertDictation;
+$("meetingRecordBtn").onclick=toggleMeetingRecording;
+$("meetingMarkerBtn").onclick=addMeetingMarker;
+$("meetingToDocBtn").onclick=meetingToDocument;
+$("summarizeMeetingBtn").onclick=summarizeMeeting;
+$("copySummaryBtn").onclick=copyMeetingSummary;
+$("summaryToDocBtn").onclick=summaryToDocument;
+$("loadDocumentSpeechBtn").onclick=loadCurrentDocumentForSpeech;
+$("speechPlayBtn").onclick=playSpeech;
+$("speechPauseBtn").onclick=toggleSpeechPause;
+$("speechStopBtn").onclick=stopSpeech;
+$("speechRate").oninput=()=>{$("speechRateValue").textContent=`${Number($("speechRate").value).toFixed(1)}×`};
+$("speechPitch").oninput=()=>{$("speechPitchValue").textContent=Number($("speechPitch").value).toFixed(1)};
 
 document.querySelectorAll("[data-cmd]").forEach(b=>b.onclick=()=>{document.execCommand(b.dataset.cmd,false,null);$("editor").focus();scheduleSave()});
 document.querySelectorAll("[data-block]").forEach(b=>b.onclick=()=>{document.execCommand("formatBlock",false,b.dataset.block);$("editor").focus();scheduleSave()});
@@ -553,6 +996,11 @@ $("promptConfirm").onclick=()=>{$("promptDialog").returnValue="default"};
 window.addEventListener("online",()=>setSync("网络已恢复"));
 window.addEventListener("offline",()=>setSync("当前离线"));
 window.addEventListener("beforeunload",()=>{clearTimeout(saveTimer)});
+window.addEventListener("beforeunload",()=>{stopSpeech();clearInterval(meetingTimerId)});
+document.addEventListener("click",event=>{
+  if(event.target.closest("#notebookList .item"))setTimeout(()=>setMobileTab("pages"),60);
+  if(event.target.closest("#pageList .item,#newPageBtn"))setTimeout(()=>setMobileTab("editor"),100);
+},true);
 
 document.addEventListener("keydown",e=>{
   if(e.ctrlKey&&e.key.toLowerCase()==="s"){e.preventDefault();saveCurrent()}
@@ -570,6 +1018,9 @@ supabase.auth.onAuthStateChange(async (_event,newSession)=>{
 });
 
 applyTheme();
+loadSpeechVoices();
+if ("speechSynthesis" in window) speechSynthesis.onvoiceschanged=loadSpeechVoices;
+setMobileTab("books");
 setMode("login");
 const {data:{session:initialSession}}=await supabase.auth.getSession();
 session=initialSession;
