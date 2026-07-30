@@ -324,15 +324,20 @@
           <textarea id="ocrResult" rows="14" placeholder="识别结果会显示在这里，可直接校对修改。"></textarea>
           <div class="ocr-actions">
             <button id="localOcrBtn" type="button">设备快速识别</button>
-            <button id="aiOcrBtn" type="button" class="primary">AI 精准识别</button>
+            <button id="aiOcrBtn" type="button" class="primary">AI 识别并纠正</button>
           </div>
-          <button id="batchAiOcrBtn" type="button" class="full scan-batch-button">批量识别全部页面</button>
+          <button id="batchAiOcrBtn" type="button" class="full scan-batch-button">批量 AI 恢复全部页面</button>
+          <details id="ocrComparePanel" class="ocr-compare hidden">
+            <summary>查看 AI 纠正前原文</summary>
+            <pre id="ocrRawResult"></pre>
+          </details>
           <details class="ai-settings">
             <summary>识别引擎与 Key 设置</summary>
-            <label>识别服务<select id="ocrProvider"><option value="local">本机免费 OCR（无需 Key）</option><option value="openrouter">OpenRouter 多模型</option><option value="gemini">Google Gemini</option></select></label>
-            <label>API 密钥<input id="ocrApiKey" type="password" autocomplete="off" placeholder="仅所选在线服务需要" /></label>
+            <label>识别服务<select id="ocrProvider"><option value="local">本机免费 OCR（无需 Key）</option><option value="openrouter">OpenRouter 免费视觉模型</option><option value="gemini">Google Gemini 免费额度</option></select></label>
+            <label>恢复强度<select id="ocrRestoreMode"><option value="strict">严格还原（推荐，不改写）</option><option value="layout">还原排版与表格</option><option value="handwriting">加强手写辨认</option></select></label>
+            <label>API 密钥<input id="ocrApiKey" type="password" autocomplete="off" placeholder="免费模型也需填写自己的免费 Key" /></label>
             <label>模型<input id="ocrModel" value="openrouter/free" /></label>
-            <small>密钥仅保存在当前设备。在线服务会接收当前图片；敏感材料建议使用本机识别。</small>
+            <small>AI 会同时核对原图和设备 OCR 草稿，纠正错字、漏字与版面。密钥仅保存在当前设备，不会提交到 GitHub；敏感材料建议使用本机识别。</small>
           </details>
           <div class="scan-finish-actions">
             <button id="copyOcrBtn" type="button">复制文字</button>
