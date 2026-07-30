@@ -628,13 +628,51 @@ function chooseScanImage(useCamera) {
 function addScanFiles(files) {
   const images = [...files].filter(file => file.type.startsWith("image/"));
   if (!images.length) return toast("请选择图片文件。");
-  scanFiles.push(...images.map(file => ({file, url:URL.createObjectURL(file), rotation:0, text:""})));
+  scanFiles.push(...images.map(file => ({file, url:URL.createObjectURL(file), rotation:0, text:"", rawText:""})));
   activeScanIndex = Math.max(0, scanFiles.length - images.length);
   $("scanEmpty").classList.add("hidden");
   $("scanWorkspace").classList.remove("hidden");
   renderScanPages();
   renderScanCanvas();
 }
+
+window.__paperbookReceiveNativeScanPage = async function(title, rawText, dataUrl, index, total) {
+  try {
+    if (Number(index) === 0) {
+      scanFiles.forEach(item => { if (item.url?.startsWith("blob:")) URL.revokeObjectURL(item.url) });
+      scanFiles = [];
+    }
+    const response = await fetch(String(dataUrl));
+    const blob = await response.blob();
+    const pageNumber = Number(index) + 1;
+    const file = new File([blob], `PaperBook_原生扫描_${pageNumber}.jpg`, {type:"image/jpeg"});
+    scanFiles.push({
+      file,
+      url:URL.createObjectURL(blob),
+      rotation:0,
+      text:String(rawText || "").trim(),
+      rawText:String(rawText || "").trim(),
+      nativeScan:true
+    });
+    activeScanIndex = scanFiles.length - 1;
+    if (!$("scanDialog").open) openScanner();
+    $("scanEmpty").classList.add("hidden");
+    $("scanWorkspace").classList.remove("hidden");
+    renderScanPages();
+    await renderScanCanvas();
+    setOcrStatus("设备已识别 · 建议 AI 恢复", "warn");
+    if (scanFiles.length === Number(total)) {
+      activeScanIndex = 0;
+      renderScanPages();
+      await renderScanCanvas();
+      toast(`已接收 ${total} 页原生扫描。点击“AI 识别并纠正”核对原图。`, 5200);
+    }
+    return true;
+  } catch (error) {
+    toast(`接收原生扫描页失败：${error.message}`, 5000);
+    return false;
+  }
+};
 
 function renderScanPages() {
   $("scanPageCount").textContent = `${scanFiles.length} 页`;
@@ -670,6 +708,8 @@ async function renderScanCanvas() {
   context.drawImage(image,-width/2,-height/2,width,height);
   context.restore();
   $("ocrResult").value = item.text || "";
+  $("ocrRawResult").textContent = item.rawText || "";
+  $("ocrComparePanel").classList.toggle("hidden", !item.rawText || item.rawText === item.text);
 }
 
 function canvasDataUrl(quality=.9) {
@@ -748,8 +788,11 @@ async function runLocalOcr() {
     });
     const text=result?.data?.text?.trim()||"";
     if(!text)throw new Error("没有识别到清晰文字");
+    scanFiles[activeScanIndex].rawText=text;
     scanFiles[activeScanIndex].text=text;
     $("ocrResult").value=text;
+    $("ocrRawResult").textContent=text;
+    $("ocrComparePanel").classList.add("hidden");
     setOcrStatus("本机已识别","done");
   } catch(error) {
     setOcrStatus("识别失败","warn");toast(error.message||"本机识别失败。",4500);
@@ -774,29 +817,52 @@ async function runAiOcr() {
   localStorage.setItem("paperbook_ocr_key", key);
   localStorage.setItem("paperbook_ocr_model", $("ocrModel").value.trim() || "openrouter/free");
   localStorage.setItem("paperbook_ocr_provider", provider);
-  setOcrStatus("AI 识别中…", "working");
+  setOcrStatus("AI 正在核对原图…", "working");
   $("aiOcrBtn").disabled = true;
   try {
+    const item = scanFiles[activeScanIndex];
+    const rawDraft = (item.rawText || item.text || $("ocrResult").value || "").trim();
     const kindPrompt = {
       document:"普通文档",book:"书籍页面",handwriting:"手写笔记",table:"表格",
       card:"证件或名片",receipt:"票据或发票"
     }[scanKind];
-    const prompt=`你是严谨的 OCR 校对专家。逐字读取这张${kindPrompt}图片。保留原有段落、标题、编号和标点；表格使用 Markdown 表格；看不清的字符用【待确认】标记，绝不猜测。只输出识别后的正文，不要解释。`;
+    const restoreMode = $("ocrRestoreMode").value;
+    const modeRule = restoreMode==="layout"
+      ? "重点恢复标题层级、段落、列表、表格行列；表格用 Markdown 表格表示。"
+      : restoreMode==="handwriting"
+        ? "重点辨认手写连笔和上下文，但不得为了语句通顺而编造原图没有的内容。"
+        : "严格逐字还原，不润色、不改写、不总结。";
+    const prompt=`你是 PaperBook 的文档图像恢复与 OCR 终审专家。请以原图为最高证据，交叉核对设备 OCR 草稿，恢复这张${kindPrompt}的真实文字。
+
+硬性规则：
+1. ${modeRule}
+2. 纠正形近字、同音字、断行、粘连、重复和漏字；保留原有标题、段落、编号、标点及阅读顺序。
+3. 数字、金额、日期、姓名、专有名词、公式和证件字段必须逐字符核对，不能依靠常识猜测。
+4. 草稿与图片冲突时服从图片；图片确实无法确认时写【待确认：可能为X】。不要静默臆测。
+5. 不要输出说明、评价、Markdown 代码围栏或“识别结果”等前缀，只输出恢复后的正文。
+
+设备 OCR 草稿（可能有错，也可能为空）：
+---草稿开始---
+${rawDraft || "（无草稿，请直接读取原图）"}
+---草稿结束---`;
     const response = provider==="gemini"
-      ? await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent($("ocrModel").value.trim()||"gemini-2.5-flash")}:generateContent?key=${encodeURIComponent(key)}`,{
-          method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contents:[{parts:[{text:prompt},{inline_data:{mime_type:"image/jpeg",data:canvasDataUrl(.9).split(",")[1]}}]}],generationConfig:{temperature:0}})
+      ? await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent($("ocrModel").value.trim()||"gemini-3.6-flash")}:generateContent?key=${encodeURIComponent(key)}`,{
+          method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contents:[{parts:[{text:prompt},{inline_data:{mime_type:"image/jpeg",data:canvasDataUrl(.94).split(",")[1]}}]}],generationConfig:{temperature:0,topP:.1}})
         })
       : await fetch("https://openrouter.ai/api/v1/chat/completions", {
           method:"POST",headers:{"Authorization":`Bearer ${key}`,"Content-Type":"application/json","HTTP-Referer":location.origin,"X-Title":"PaperBook Scan"},
-          body:JSON.stringify({model:$("ocrModel").value.trim()||"openrouter/free",messages:[{role:"user",content:[{type:"text",text:prompt},{type:"image_url",image_url:{url:canvasDataUrl(.9)}}]}],temperature:0})
+          body:JSON.stringify({model:$("ocrModel").value.trim()||"openrouter/free",messages:[{role:"user",content:[{type:"text",text:prompt},{type:"image_url",image_url:{url:canvasDataUrl(.94)}}]}],temperature:0,top_p:.1})
         });
     const data = await response.json();
     if (!response.ok) throw new Error(data?.error?.message || "模型服务请求失败");
     const text = (provider==="gemini" ? data?.candidates?.[0]?.content?.parts?.map(part=>part.text||"").join("") : data?.choices?.[0]?.message?.content)?.trim();
     if (!text) throw new Error("模型没有返回识别文字");
-    scanFiles[activeScanIndex].text = text;
+    if (!item.rawText) item.rawText = rawDraft;
+    item.text = text;
     $("ocrResult").value = text;
-    setOcrStatus(text.includes("【待确认】") ? "需复核" : "已识别", text.includes("【待确认】") ? "warn" : "done");
+    $("ocrRawResult").textContent = item.rawText || "";
+    $("ocrComparePanel").classList.toggle("hidden", !item.rawText || item.rawText === text);
+    setOcrStatus(text.includes("【待确认") ? "AI 已恢复 · 需复核" : "AI 已恢复", text.includes("【待确认") ? "warn" : "done");
   } catch (error) {
     setOcrStatus("识别失败", "warn");
     toast(error.message || "AI 识别失败，请稍后重试。", 5000);
@@ -1327,10 +1393,12 @@ $("speechPitch").oninput=()=>{$("speechPitchValue").textContent=Number($("speech
 $("ocrApiKey").value=localStorage.getItem("paperbook_ocr_key")||"";
 $("ocrModel").value=localStorage.getItem("paperbook_ocr_model")||"openrouter/free";
 $("ocrProvider").value=localStorage.getItem("paperbook_ocr_provider")||"local";
+$("ocrRestoreMode").value=localStorage.getItem("paperbook_ocr_restore_mode")||"strict";
+$("ocrRestoreMode").onchange=()=>localStorage.setItem("paperbook_ocr_restore_mode",$("ocrRestoreMode").value);
 $("ocrProvider").onchange=()=>{
   const provider=$("ocrProvider").value;
   localStorage.setItem("paperbook_ocr_provider",provider);
-  $("ocrModel").value=provider==="gemini"?"gemini-2.5-flash":provider==="openrouter"?"openrouter/free":"本机 Tesseract OCR";
+  $("ocrModel").value=provider==="gemini"?"gemini-3.6-flash":provider==="openrouter"?"openrouter/free":"本机 Tesseract OCR";
   $("ocrApiKey").disabled=provider==="local";$("ocrModel").disabled=provider==="local";
 };
 $("ocrProvider").dispatchEvent(new Event("change"));
