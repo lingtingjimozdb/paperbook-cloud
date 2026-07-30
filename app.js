@@ -105,11 +105,10 @@ function displayAccount(email) {
   return value;
 }
 
-function validateAccount(account) {
-  const normalized = normalizeAccount(account);
-  if (normalized.length < 2) return "账号名至少 2 个字符。";
-  if (normalized.length > 32) return "账号名最多 32 个字符。";
-  if (/[\r\n\t]/.test(normalized)) return "账号名包含无效字符。";
+function normalizeEmail(value) { return String(value || "").trim().toLowerCase(); }
+function validateEmail(value) {
+  const email = normalizeEmail(value);
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return "请输入有效的邮箱地址。";
   return "";
 }
 
@@ -139,18 +138,15 @@ function setMode(next) {
   $("signupTab").classList.toggle("active", next === "signup");
   $("authSubmit").textContent = next === "login" ? "登录" : "注册";
   $("passwordInput").autocomplete = next === "login" ? "current-password" : "new-password";
-  $("emailInput").placeholder = next === "login" ? "输入账号名" : "设置一个账号名";
+  $("emailInput").placeholder = next === "login" ? "输入注册邮箱" : "输入可接收验证邮件的邮箱";
 }
 
 async function authSubmit(event) {
   event.preventDefault();
 
-  const account = $("emailInput").value;
-  const accountError = validateAccount(account);
-  if (accountError) return toast(accountError, 4200);
-
-  const normalizedAccount = normalizeAccount(account);
-  const email = accountToInternalEmail(normalizedAccount);
+  const email = normalizeEmail($("emailInput").value);
+  const emailError = validateEmail(email);
+  if (emailError) return toast(emailError, 4200);
   const password = $("passwordInput").value;
 
   $("authSubmit").disabled = true;
@@ -163,7 +159,8 @@ async function authSubmit(event) {
         email,
         password,
         options: {
-          data: { display_name: normalizedAccount }
+          emailRedirectTo: `${location.origin}${location.pathname}`,
+          data: { display_name: email.split("@")[0] }
         }
       });
       if (error) throw error;
@@ -171,15 +168,15 @@ async function authSubmit(event) {
       if (data.session) {
         toast("注册成功，已自动登录。");
       } else {
-        toast("账号已创建，但项目仍要求邮箱确认。请关闭 Supabase 的 Confirm Email。", 7000);
+        toast("注册成功。请查收验证邮件并点击确认链接后登录。", 7000);
       }
     }
   } catch (error) {
     const message = String(error?.message || "");
     if (/invalid login credentials/i.test(message)) {
-      toast("账号或密码不正确。", 4500);
+      toast("邮箱或密码不正确，或邮箱尚未完成验证。", 5000);
     } else if (/user already registered/i.test(message)) {
-      toast("这个账号已经存在，请直接登录。", 4500);
+      toast("这个邮箱已经注册，请直接登录或重置密码。", 5000);
     } else {
       toast(message || "操作失败", 5000);
     }
@@ -189,7 +186,75 @@ async function authSubmit(event) {
 }
 
 async function forgotPassword() {
-  toast("账号名登录不依赖邮箱。请妥善保存密码；测试版忘记密码时需由管理员处理。", 6500);
+  $("forgotEmailInput").value = normalizeEmail($("emailInput").value);
+  $("forgotPasswordDialog").showModal();
+}
+
+async function sendPasswordReset(event) {
+  event.preventDefault();
+  const email = normalizeEmail($("forgotEmailInput").value);
+  const errorText = validateEmail(email);
+  if (errorText) return toast(errorText, 4200);
+  $("sendResetEmailBtn").disabled = true;
+  try {
+    const redirectTo = `${location.origin}${location.pathname}?recovery=1`;
+    const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
+    if (error) throw error;
+    $("forgotPasswordDialog").close();
+    toast("重置邮件已发送，请打开邮箱并点击链接。也请检查垃圾邮件箱。", 7500);
+  } catch (error) {
+    toast(error?.message || "重置邮件发送失败。", 5500);
+  } finally {
+    $("sendResetEmailBtn").disabled = false;
+  }
+}
+
+function openPasswordDialog(recovery=false) {
+  $("passwordDialog").dataset.recovery = recovery ? "true" : "false";
+  $("passwordDialogTitle").textContent = recovery ? "设置新密码" : "修改密码";
+  $("passwordDialogHelp").textContent = recovery
+    ? "邮箱验证已通过，请设置新的登录密码。"
+    : "先验证当前密码，再设置新密码。";
+  $("currentPasswordLabel").classList.toggle("hidden", recovery);
+  $("currentPasswordInput").required = !recovery;
+  $("currentPasswordInput").value = "";
+  $("newPasswordInput").value = "";
+  $("confirmPasswordInput").value = "";
+  $("passwordDialog").showModal();
+}
+
+async function updatePassword(event) {
+  event.preventDefault();
+  const recovery = $("passwordDialog").dataset.recovery === "true";
+  const currentPassword = $("currentPasswordInput").value;
+  const newPassword = $("newPasswordInput").value;
+  const confirmation = $("confirmPasswordInput").value;
+  if (newPassword.length < 8) return toast("新密码至少需要 8 位。", 4200);
+  if (newPassword !== confirmation) return toast("两次输入的新密码不一致。", 4200);
+  if (!/[A-Za-z]/.test(newPassword) || !/\d/.test(newPassword)) {
+    return toast("新密码请同时包含字母和数字。", 4200);
+  }
+  $("confirmPasswordBtn").disabled = true;
+  try {
+    if (!recovery) {
+      const email = session?.user?.email;
+      if (!email) throw new Error("没有找到当前登录邮箱。");
+      const { error: verifyError } = await supabase.auth.signInWithPassword({
+        email,
+        password:currentPassword
+      });
+      if (verifyError) throw new Error("当前密码不正确。");
+    }
+    const { error } = await supabase.auth.updateUser({password:newPassword});
+    if (error) throw error;
+    $("passwordDialog").close();
+    history.replaceState({}, "", location.pathname);
+    toast("密码修改成功，请妥善保存新密码。", 6000);
+  } catch (error) {
+    toast(error?.message || "密码修改失败。", 5500);
+  } finally {
+    $("confirmPasswordBtn").disabled = false;
+  }
 }
 
 async function bootstrap() {
@@ -1296,6 +1361,8 @@ $("loginTab").onclick=()=>setMode("login");
 $("signupTab").onclick=()=>setMode("signup");
 $("authForm").onsubmit=authSubmit;
 $("forgotBtn").onclick=forgotPassword;
+$("sendResetEmailBtn").onclick=sendPasswordReset;
+$("confirmPasswordBtn").onclick=updatePassword;
 $("newNotebookBtn").onclick=newNotebook;
 $("renameNotebookBtn").onclick=renameNotebook;
 $("newPageBtn").onclick=newPage;
@@ -1313,6 +1380,7 @@ $("editor").oninput=scheduleSave;
 $("exportBtn").onclick=exportBackup;
 $("importBtn").onclick=()=>$("importPicker").click();
 $("importPicker").onchange=e=>{const f=e.target.files[0];if(f)importBackup(f);e.target.value=""};
+$("changePasswordBtn").onclick=()=>openPasswordDialog(false);
 $("logoutBtn").onclick=async()=>{await saveCurrent();await supabase.auth.signOut()};
 function toggleTheme(){const dark=localStorage.getItem("paperbook_theme")==="dark";localStorage.setItem("paperbook_theme",dark?"light":"dark");applyTheme()}
 $("scanCenterBtn").onclick=openScanner;
@@ -1328,6 +1396,7 @@ $("morePlannerBtn").onclick=openPlanner;
 $("moreThemeBtn").onclick=()=>{toggleTheme();closeMore()};
 $("moreExportBtn").onclick=()=>{closeMore();exportBackup()};
 $("moreImportBtn").onclick=()=>{closeMore();$("importPicker").click()};
+$("moreChangePasswordBtn").onclick=()=>{closeMore();openPasswordDialog(false)};
 $("moreLogoutBtn").onclick=async()=>{closeMore();await saveCurrent();await supabase.auth.signOut()};
 $("cameraScanBtn").onclick=()=>chooseScanImage(true);
 $("fileScanBtn").onclick=()=>chooseScanImage(false);
@@ -1463,11 +1532,12 @@ document.addEventListener("keydown",e=>{
   if(e.ctrlKey&&e.key==="ArrowRight"){e.preventDefault();step(1)}
 });
 
-supabase.auth.onAuthStateChange(async (_event,newSession)=>{
+supabase.auth.onAuthStateChange(async (event,newSession)=>{
   session=newSession;
   if(!session){showAuth();return}
   showApp();
   try{await bootstrap()}catch(error){toast(error.message,7000);setSync("初始化失败")}
+  if(event==="PASSWORD_RECOVERY")setTimeout(()=>openPasswordDialog(true),120);
 });
 
 applyTheme();
@@ -1478,7 +1548,11 @@ setMobileTab("books");
 setMode("login");
 const {data:{session:initialSession}}=await supabase.auth.getSession();
 session=initialSession;
-if(session){showApp();try{await bootstrap()}catch(error){toast(error.message,7000)}}
+if(session){
+  showApp();
+  try{await bootstrap()}catch(error){toast(error.message,7000)}
+  if(new URLSearchParams(location.search).get("recovery")==="1")setTimeout(()=>openPasswordDialog(true),120);
+}
 else showAuth();
 
 if("serviceWorker" in navigator)navigator.serviceWorker.register("./sw.js").catch(()=>{});
