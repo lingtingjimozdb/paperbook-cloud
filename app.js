@@ -32,6 +32,7 @@ let speechVoices = [];
 let latestMeetingSummary = "";
 let schedules = JSON.parse(localStorage.getItem("paperbook_schedules") || "[]");
 let showCompletedSchedules = false;
+let scheduleView = "today";
 
 function toast(message, timeout=2600) {
   $("toast").textContent = message;
@@ -632,27 +633,26 @@ async function renderScanCanvas() {
   const item = scanFiles[activeScanIndex];
   if (!item) return;
   const image = new Image();
-  image.onload = () => {
-    const canvas = $("scanCanvas");
-    const angle = item.rotation || 0;
-    const sideways = angle % 180 !== 0;
-    const maxSide = 1800;
-    const ratio = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
-    const width = Math.round(image.naturalWidth * ratio);
-    const height = Math.round(image.naturalHeight * ratio);
-    canvas.width = sideways ? height : width;
-    canvas.height = sideways ? width : height;
-    const context = canvas.getContext("2d", {willReadFrequently:true});
-    context.save();
-    context.translate(canvas.width/2,canvas.height/2);
-    context.rotate(angle*Math.PI/180);
-    context.filter = scanFilter==="gray" ? "grayscale(1) contrast(1.15)" :
-      scanFilter==="bw" ? "grayscale(1) contrast(2.1)" :
-      scanFilter==="enhance" ? "contrast(1.16) saturate(.92) brightness(1.06)" : "none";
-    context.drawImage(image,-width/2,-height/2,width,height);
-    context.restore();
-  };
   image.src = item.url;
+  await new Promise((resolve,reject)=>{image.onload=resolve;image.onerror=reject});
+  const canvas = $("scanCanvas");
+  const angle = item.rotation || 0;
+  const sideways = angle % 180 !== 0;
+  const maxSide = 1800;
+  const ratio = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
+  const width = Math.round(image.naturalWidth * ratio);
+  const height = Math.round(image.naturalHeight * ratio);
+  canvas.width = sideways ? height : width;
+  canvas.height = sideways ? width : height;
+  const context = canvas.getContext("2d", {willReadFrequently:true});
+  context.save();
+  context.translate(canvas.width/2,canvas.height/2);
+  context.rotate(angle*Math.PI/180);
+  context.filter = scanFilter==="gray" ? "grayscale(1) contrast(1.15)" :
+    scanFilter==="bw" ? "grayscale(1) contrast(2.1)" :
+    scanFilter==="enhance" ? "contrast(1.16) saturate(.92) brightness(1.06)" : "none";
+  context.drawImage(image,-width/2,-height/2,width,height);
+  context.restore();
   $("ocrResult").value = item.text || "";
 }
 
@@ -660,13 +660,84 @@ function canvasDataUrl(quality=.9) {
   return $("scanCanvas").toDataURL("image/jpeg", quality);
 }
 
+function downloadBlob(blob,name) {
+  const link=document.createElement("a");
+  link.href=URL.createObjectURL(blob);link.download=name;link.click();
+  setTimeout(()=>URL.revokeObjectURL(link.href),1000);
+}
+
+function autoCropScan() {
+  const source=$("scanCanvas"),context=source.getContext("2d",{willReadFrequently:true});
+  const {data,width,height}=context.getImageData(0,0,source.width,source.height);
+  let left=width,top=height,right=0,bottom=0;
+  for(let y=0;y<height;y+=2)for(let x=0;x<width;x+=2){
+    const i=(y*width+x)*4;
+    if(data[i]<242||data[i+1]<242||data[i+2]<242){left=Math.min(left,x);right=Math.max(right,x);top=Math.min(top,y);bottom=Math.max(bottom,y)}
+  }
+  if(right<=left||bottom<=top||((right-left)*(bottom-top)>width*height*.94))return toast("没有检测到可去除的明显白边。");
+  const margin=12;
+  left=Math.max(0,left-margin);top=Math.max(0,top-margin);right=Math.min(width,right+margin);bottom=Math.min(height,bottom+margin);
+  const output=document.createElement("canvas");output.width=right-left;output.height=bottom-top;
+  output.getContext("2d").drawImage(source,left,top,output.width,output.height,0,0,output.width,output.height);
+  output.toBlob(blob=>{
+    const item=scanFiles[activeScanIndex];URL.revokeObjectURL(item.url);
+    item.file=new File([blob],item.file.name,{type:"image/jpeg"});item.url=URL.createObjectURL(blob);item.rotation=0;
+    renderScanPages();renderScanCanvas();toast("已自动去除白边。");
+  },"image/jpeg",.94);
+}
+
+async function batchAiOcr() {
+  if(!scanFiles.length)return;
+  const start=activeScanIndex;
+  $("batchAiOcrBtn").disabled=true;
+  try{
+    for(let index=0;index<scanFiles.length;index++){
+      activeScanIndex=index;renderScanPages();await renderScanCanvas();await new Promise(resolve=>setTimeout(resolve,120));
+      await runAiOcr();
+    }
+    toast(`已完成 ${scanFiles.length} 页识别。`);
+  }finally{activeScanIndex=start;renderScanPages();renderScanCanvas();$("batchAiOcrBtn").disabled=false}
+}
+
+function exportScanText() {
+  const text=scanFiles.map((item,index)=>`第 ${index+1} 页\n${item.text||"（未识别）"}`).join("\n\n");
+  downloadBlob(new Blob([text],{type:"text/plain;charset=utf-8"}),`PaperBook_扫描文字_${new Date().toISOString().slice(0,10)}.txt`);
+}
+
+async function exportScanPdf() {
+  if(!window.jspdf?.jsPDF)return toast("PDF 组件尚未加载，请检查网络后重试。");
+  const {jsPDF}=window.jspdf;
+  const pdf=new jsPDF({unit:"mm",format:"a4",orientation:"portrait"});
+  for(let index=0;index<scanFiles.length;index++){
+    if(index)pdf.addPage();
+    const image=await new Promise((resolve,reject)=>{const value=new Image();value.onload=()=>resolve(value);value.onerror=reject;value.src=scanFiles[index].url});
+    const ratio=Math.min(190/image.width,277/image.height);
+    const width=image.width*ratio,height=image.height*ratio;
+    pdf.addImage(image,"JPEG",(210-width)/2,(297-height)/2,width,height,undefined,"FAST");
+  }
+  pdf.save(`PaperBook_扫描_${new Date().toISOString().slice(0,10)}.pdf`);
+}
+
 async function runLocalOcr() {
   if (window.AndroidBridge && typeof window.AndroidBridge.openScanner === "function") {
     window.AndroidBridge.openScanner();
     return;
   }
-  setOcrStatus("设备识别需手机 App", "warn");
-  toast("电脑端请使用 AI 精准识别；手机 App 支持离线快速识别。", 3800);
+  if (!window.Tesseract) return toast("本机识别组件尚未加载，请检查网络后重试。", 4500);
+  setOcrStatus("本机识别中…", "working");
+  $("localOcrBtn").disabled=true;
+  try {
+    const result=await Tesseract.recognize(canvasDataUrl(.92),"chi_sim+eng",{
+      logger:message=>{if(message.status==="recognizing text")setOcrStatus(`识别 ${Math.round(message.progress*100)}%`,"working")}
+    });
+    const text=result?.data?.text?.trim()||"";
+    if(!text)throw new Error("没有识别到清晰文字");
+    scanFiles[activeScanIndex].text=text;
+    $("ocrResult").value=text;
+    setOcrStatus("本机已识别","done");
+  } catch(error) {
+    setOcrStatus("识别失败","warn");toast(error.message||"本机识别失败。",4500);
+  } finally {$("localOcrBtn").disabled=false}
 }
 
 function setOcrStatus(text, className="") {
@@ -675,6 +746,8 @@ function setOcrStatus(text, className="") {
 }
 
 async function runAiOcr() {
+  const provider=$("ocrProvider").value;
+  if(provider==="local")return runLocalOcr();
   const key = $("ocrApiKey").value.trim();
   if (!key) {
     $("ocrApiKey").closest("details").open = true;
@@ -684,6 +757,7 @@ async function runAiOcr() {
   if (!scanFiles.length) return;
   localStorage.setItem("paperbook_ocr_key", key);
   localStorage.setItem("paperbook_ocr_model", $("ocrModel").value.trim() || "openrouter/free");
+  localStorage.setItem("paperbook_ocr_provider", provider);
   setOcrStatus("AI 识别中…", "working");
   $("aiOcrBtn").disabled = true;
   try {
@@ -691,24 +765,18 @@ async function runAiOcr() {
       document:"普通文档",book:"书籍页面",handwriting:"手写笔记",table:"表格",
       card:"证件或名片",receipt:"票据或发票"
     }[scanKind];
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method:"POST",
-      headers:{
-        "Authorization":`Bearer ${key}`,"Content-Type":"application/json",
-        "HTTP-Referer":location.origin,"X-Title":"PaperBook Scan"
-      },
-      body:JSON.stringify({
-        model:$("ocrModel").value.trim() || "openrouter/free",
-        messages:[{role:"user",content:[
-          {type:"text",text:`你是严谨的 OCR 校对专家。逐字读取这张${kindPrompt}图片。保留原有段落、标题、编号和标点；表格使用 Markdown 表格；看不清的字符用【待确认】标记，绝不猜测。只输出识别后的正文，不要解释。`},
-          {type:"image_url",image_url:{url:canvasDataUrl(.9)}}
-        ]}],
-        temperature:0
-      })
-    });
+    const prompt=`你是严谨的 OCR 校对专家。逐字读取这张${kindPrompt}图片。保留原有段落、标题、编号和标点；表格使用 Markdown 表格；看不清的字符用【待确认】标记，绝不猜测。只输出识别后的正文，不要解释。`;
+    const response = provider==="gemini"
+      ? await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent($("ocrModel").value.trim()||"gemini-2.5-flash")}:generateContent?key=${encodeURIComponent(key)}`,{
+          method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contents:[{parts:[{text:prompt},{inline_data:{mime_type:"image/jpeg",data:canvasDataUrl(.9).split(",")[1]}}]}],generationConfig:{temperature:0}})
+        })
+      : await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          method:"POST",headers:{"Authorization":`Bearer ${key}`,"Content-Type":"application/json","HTTP-Referer":location.origin,"X-Title":"PaperBook Scan"},
+          body:JSON.stringify({model:$("ocrModel").value.trim()||"openrouter/free",messages:[{role:"user",content:[{type:"text",text:prompt},{type:"image_url",image_url:{url:canvasDataUrl(.9)}}]}],temperature:0})
+        });
     const data = await response.json();
     if (!response.ok) throw new Error(data?.error?.message || "模型服务请求失败");
-    const text = data?.choices?.[0]?.message?.content?.trim();
+    const text = (provider==="gemini" ? data?.candidates?.[0]?.content?.parts?.map(part=>part.text||"").join("") : data?.choices?.[0]?.message?.content)?.trim();
     if (!text) throw new Error("模型没有返回识别文字");
     scanFiles[activeScanIndex].text = text;
     $("ocrResult").value = text;
@@ -763,16 +831,53 @@ function renderSchedules() {
   };
   $("todayEventCount").textContent=schedules.filter(item=>sameDay(item.time)).length;
   $("todoCount").textContent=schedules.filter(item=>!item.done).length;
-  const visible=schedules.filter(item=>showCompletedSchedules||!item.done).sort((a,b)=>new Date(a.time)-new Date(b.time));
+  const rangeEnd=scheduleView==="today" ? new Date(now.getFullYear(),now.getMonth(),now.getDate()+1).getTime() :
+    scheduleView==="week" ? now.getTime()+7*86400000 : Infinity;
+  const visible=schedules.filter(item=>{
+    const timestamp=new Date(item.time).getTime();
+    return (scheduleView==="all"||timestamp<rangeEnd)&&(showCompletedSchedules||!item.done);
+  }).sort((a,b)=>new Date(a.time)-new Date(b.time));
+  const categoryNames={work:"工作",study:"学习",meeting:"会议",personal:"个人"};
+  const repeatNames={daily:"每天重复",weekly:"每周重复",monthly:"每月重复"};
   $("scheduleList").innerHTML=visible.length ? visible.map(item=>{
     const date=new Date(item.time);
     const day=sameDay(item.time)?"今天":`${date.getMonth()+1}/${date.getDate()}`;
     return `<article class="schedule-item ${item.done?"done":""}">
       <div class="schedule-time">${String(date.getHours()).padStart(2,"0")}:${String(date.getMinutes()).padStart(2,"0")}<span>${day}</span></div>
-      <div class="schedule-body"><strong>${esc(item.title)}</strong><span>${esc(item.detail||`提前 ${item.reminder} 分钟提醒`)}</span></div>
-      <div class="schedule-actions"><button type="button" data-toggle-schedule="${item.id}" title="完成">${item.done?"↶":"✓"}</button><button type="button" data-delete-schedule="${item.id}" title="删除">×</button></div>
+      <div class="schedule-body"><strong>${esc(item.title)}</strong><span class="schedule-category">${categoryNames[item.category]||"工作"}${repeatNames[item.repeat]?` · ${repeatNames[item.repeat]}`:""}</span><span>${esc(item.detail||`提前 ${item.reminder} 分钟提醒`)}</span></div>
+      <div class="schedule-actions"><button type="button" data-edit-schedule="${item.id}" title="编辑">✎</button><button type="button" data-toggle-schedule="${item.id}" title="完成">${item.done?"↶":"✓"}</button><button type="button" data-delete-schedule="${item.id}" title="删除">×</button></div>
     </article>`;
   }).join("") : `<div class="planner-empty">还没有安排。把下一件重要的事放进时间轴吧。</div>`;
+}
+
+function resetScheduleForm() {
+  $("scheduleForm").reset();$("scheduleEditId").value="";
+  $("saveScheduleBtn").textContent="保存日程";$("cancelScheduleEditBtn").classList.add("hidden");
+}
+
+function editSchedule(id) {
+  const item=schedules.find(value=>value.id===id);if(!item)return;
+  $("scheduleTitle").value=item.title;$("scheduleTime").value=item.time;
+  $("scheduleReminder").value=String(item.reminder);$("scheduleRepeat").value=item.repeat||"none";
+  $("scheduleCategory").value=item.category||"work";$("scheduleDetail").value=item.detail||"";
+  $("scheduleEditId").value=id;$("saveScheduleBtn").textContent="保存修改";
+  $("cancelScheduleEditBtn").classList.remove("hidden");$("scheduleTitle").focus();
+}
+
+function nextRepeatTime(item) {
+  const next=new Date(item.time);
+  if(item.repeat==="daily")next.setDate(next.getDate()+1);
+  if(item.repeat==="weekly")next.setDate(next.getDate()+7);
+  if(item.repeat==="monthly")next.setMonth(next.getMonth()+1);
+  return next;
+}
+
+function exportCalendar() {
+  const pad=value=>String(value).padStart(2,"0");
+  const format=value=>{const d=new Date(value);return `${d.getUTCFullYear()}${pad(d.getUTCMonth()+1)}${pad(d.getUTCDate())}T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}00Z`};
+  const escapeIcs=value=>String(value||"").replace(/\\/g,"\\\\").replace(/\n/g,"\\n").replace(/,/g,"\\,").replace(/;/g,"\\;");
+  const events=schedules.filter(item=>!item.done).map(item=>`BEGIN:VEVENT\nUID:${item.id}@paperbook\nDTSTAMP:${format(new Date())}\nDTSTART:${format(item.time)}\nSUMMARY:${escapeIcs(item.title)}\nDESCRIPTION:${escapeIcs(item.detail)}\nBEGIN:VALARM\nTRIGGER:-PT${item.reminder||0}M\nACTION:DISPLAY\nDESCRIPTION:${escapeIcs(item.title)}\nEND:VALARM\nEND:VEVENT`).join("\n");
+  downloadBlob(new Blob([`BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//PaperBook//Schedule//ZH\n${events}\nEND:VCALENDAR`],{type:"text/calendar;charset=utf-8"}),`PaperBook_日程_${new Date().toISOString().slice(0,10)}.ics`);
 }
 
 async function enableNotifications() {
@@ -1174,10 +1279,15 @@ document.querySelectorAll("[data-scan-kind]").forEach(button=>button.onclick=()=
   document.querySelectorAll("[data-scan-kind]").forEach(item=>item.classList.toggle("active",item===button));
 });
 $("rotateScanBtn").onclick=()=>{if(scanFiles[activeScanIndex]){scanFiles[activeScanIndex].rotation=(scanFiles[activeScanIndex].rotation+90)%360;renderScanCanvas()}};
+$("autoCropScanBtn").onclick=autoCropScan;
 $("localOcrBtn").onclick=runLocalOcr;
 $("aiOcrBtn").onclick=runAiOcr;
+$("batchAiOcrBtn").onclick=batchAiOcr;
 $("ocrResult").oninput=()=>{if(scanFiles[activeScanIndex])scanFiles[activeScanIndex].text=$("ocrResult").value};
 $("copyOcrBtn").onclick=async()=>{const text=$("ocrResult").value;if(!text)return toast("当前没有可复制的文字。");await navigator.clipboard.writeText(text);toast("识别文字已复制。")};
+$("exportScanPdfBtn").onclick=exportScanPdf;
+$("exportScanTextBtn").onclick=exportScanText;
+$("downloadScanImageBtn").onclick=()=>{const file=scanFiles[activeScanIndex]?.file;if(!file)return toast("请先添加扫描图片。");downloadBlob(file,`PaperBook_扫描_${activeScanIndex+1}.jpg`)};
 $("addScanNoteBtn").onclick=addScanRecord;
 $("closeVoiceBtn").onclick=closeVoiceStudio;
 $("voiceBackdrop").onclick=closeVoiceStudio;
@@ -1199,26 +1309,44 @@ $("speechRate").oninput=()=>{$("speechRateValue").textContent=`${Number($("speec
 $("speechPitch").oninput=()=>{$("speechPitchValue").textContent=Number($("speechPitch").value).toFixed(1)};
 $("ocrApiKey").value=localStorage.getItem("paperbook_ocr_key")||"";
 $("ocrModel").value=localStorage.getItem("paperbook_ocr_model")||"openrouter/free";
+$("ocrProvider").value=localStorage.getItem("paperbook_ocr_provider")||"local";
+$("ocrProvider").onchange=()=>{
+  const provider=$("ocrProvider").value;
+  localStorage.setItem("paperbook_ocr_provider",provider);
+  $("ocrModel").value=provider==="gemini"?"gemini-2.5-flash":provider==="openrouter"?"openrouter/free":"本机 Tesseract OCR";
+  $("ocrApiKey").disabled=provider==="local";$("ocrModel").disabled=provider==="local";
+};
+$("ocrProvider").dispatchEvent(new Event("change"));
 $("closePlannerBtn").onclick=closePlanner;
 $("plannerBackdrop").onclick=closePlanner;
 $("enableNotifyBtn").onclick=enableNotifications;
 $("scheduleForm").onsubmit=e=>{
   e.preventDefault();
-  schedules.push({
-    id:crypto.randomUUID(),title:$("scheduleTitle").value.trim(),
+  const id=$("scheduleEditId").value;
+  const value={id:id||crypto.randomUUID(),title:$("scheduleTitle").value.trim(),
     time:$("scheduleTime").value,reminder:Number($("scheduleReminder").value),
-    detail:$("scheduleDetail").value.trim(),done:false,notified:false
-  });
-  saveSchedules();e.target.reset();renderSchedules();toast("日程已保存。");
+    repeat:$("scheduleRepeat").value,category:$("scheduleCategory").value,
+    detail:$("scheduleDetail").value.trim(),done:false,notified:false};
+  if(id){const index=schedules.findIndex(item=>item.id===id);if(index>=0)schedules[index]={...schedules[index],...value}}
+  else schedules.push(value);
+  saveSchedules();resetScheduleForm();renderSchedules();toast(id?"日程已更新。":"日程已保存。");
 };
 $("scheduleList").onclick=e=>{
   const toggle=e.target.closest("[data-toggle-schedule]");
   const remove=e.target.closest("[data-delete-schedule]");
-  if(toggle){const item=schedules.find(value=>value.id===toggle.dataset.toggleSchedule);if(item)item.done=!item.done}
+  const edit=e.target.closest("[data-edit-schedule]");
+  if(edit)return editSchedule(edit.dataset.editSchedule);
+  if(toggle){const item=schedules.find(value=>value.id===toggle.dataset.toggleSchedule);if(item){item.done=!item.done;if(item.done&&item.repeat&&item.repeat!=="none"){const next=nextRepeatTime(item);schedules.push({...item,id:crypto.randomUUID(),time:`${next.getFullYear()}-${String(next.getMonth()+1).padStart(2,"0")}-${String(next.getDate()).padStart(2,"0")}T${String(next.getHours()).padStart(2,"0")}:${String(next.getMinutes()).padStart(2,"0")}`,done:false,notified:false})}}}
   if(remove)schedules=schedules.filter(value=>value.id!==remove.dataset.deleteSchedule);
   saveSchedules();renderSchedules();
 };
-$("showAllSchedulesBtn").onclick=()=>{showCompletedSchedules=!showCompletedSchedules;$("showAllSchedulesBtn").textContent=showCompletedSchedules?"仅待办":"全部";renderSchedules()};
+$("cancelScheduleEditBtn").onclick=resetScheduleForm;
+document.querySelectorAll("[data-schedule-view]").forEach(button=>button.onclick=()=>{
+  scheduleView=button.dataset.scheduleView;
+  document.querySelectorAll("[data-schedule-view]").forEach(item=>item.classList.toggle("active",item===button));
+  renderSchedules();
+});
+$("exportCalendarBtn").onclick=exportCalendar;
 renderSchedules();
 checkScheduleReminders();
 setInterval(checkScheduleReminders,30000);

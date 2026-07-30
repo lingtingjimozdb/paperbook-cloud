@@ -257,12 +257,18 @@
         <label>开始时间<input id="scheduleTime" type="datetime-local" required /></label>
         <label>提前提醒<select id="scheduleReminder"><option value="0">准时</option><option value="5">提前 5 分钟</option><option value="15" selected>提前 15 分钟</option><option value="30">提前 30 分钟</option><option value="60">提前 1 小时</option><option value="1440">提前 1 天</option></select></label>
       </div>
+      <div class="schedule-row">
+        <label>重复<select id="scheduleRepeat"><option value="none">不重复</option><option value="daily">每天</option><option value="weekly">每周</option><option value="monthly">每月</option></select></label>
+        <label>分类<select id="scheduleCategory"><option value="work">工作</option><option value="study">学习</option><option value="meeting">会议</option><option value="personal">个人</option></select></label>
+      </div>
       <textarea id="scheduleDetail" rows="3" placeholder="详细安排、地点、联系人或执行步骤"></textarea>
-      <button class="primary full" type="submit">保存日程</button>
+      <input id="scheduleEditId" type="hidden" />
+      <div class="schedule-submit-row"><button id="cancelScheduleEditBtn" class="hidden" type="button">取消编辑</button><button id="saveScheduleBtn" class="primary" type="submit">保存日程</button></div>
     </form>
     <section class="timeline-section">
-      <div class="timeline-title"><strong>接下来的安排</strong><button id="showAllSchedulesBtn" type="button">全部</button></div>
+      <div class="timeline-title"><strong>接下来的安排</strong><div class="schedule-views"><button type="button" class="active" data-schedule-view="today">今天</button><button type="button" data-schedule-view="week">7 天</button><button type="button" data-schedule-view="all">全部</button></div></div>
       <div id="scheduleList" class="schedule-list"></div>
+      <button id="exportCalendarBtn" class="full calendar-export" type="button">导出到系统日历（.ics）</button>
     </section>
     <footer class="planner-note">网页打开时会准时检查提醒。要实现网页关闭后的跨设备推送，需要后续接入云端通知服务。</footer>
   </aside>
@@ -307,6 +313,7 @@
             <button type="button" data-scan-filter="gray">灰度</button>
             <button type="button" data-scan-filter="bw">黑白</button>
             <button id="rotateScanBtn" type="button">↻ 旋转</button>
+            <button id="autoCropScanBtn" type="button">⌗ 自动去白边</button>
           </div>
           <div class="scan-stage"><canvas id="scanCanvas"></canvas></div>
           <p class="scan-quality-tip">建议：文字铺满画面、光线均匀、避免反光。模糊图片会在识别前提醒复核。</p>
@@ -318,15 +325,22 @@
             <button id="localOcrBtn" type="button">设备快速识别</button>
             <button id="aiOcrBtn" type="button" class="primary">AI 精准识别</button>
           </div>
+          <button id="batchAiOcrBtn" type="button" class="full scan-batch-button">批量识别全部页面</button>
           <details class="ai-settings">
-            <summary>AI 识别设置</summary>
-            <label>OpenRouter API 密钥<input id="ocrApiKey" type="password" autocomplete="off" placeholder="sk-or-v1-…" /></label>
+            <summary>识别引擎与 Key 设置</summary>
+            <label>识别服务<select id="ocrProvider"><option value="local">本机免费 OCR（无需 Key）</option><option value="openrouter">OpenRouter 多模型</option><option value="gemini">Google Gemini</option></select></label>
+            <label>API 密钥<input id="ocrApiKey" type="password" autocomplete="off" placeholder="仅所选在线服务需要" /></label>
             <label>模型<input id="ocrModel" value="openrouter/free" /></label>
-            <small>密钥仅保存在当前设备。免费模型可能记录请求，请勿上传身份证、合同等敏感材料。</small>
+            <small>密钥仅保存在当前设备。在线服务会接收当前图片；敏感材料建议使用本机识别。</small>
           </details>
           <div class="scan-finish-actions">
             <button id="copyOcrBtn" type="button">复制文字</button>
             <button id="addScanNoteBtn" type="button" class="primary">加入当前文档</button>
+          </div>
+          <div class="scan-export-actions">
+            <button id="exportScanPdfBtn" type="button">导出 PDF</button>
+            <button id="exportScanTextBtn" type="button">导出文字</button>
+            <button id="downloadScanImageBtn" type="button">下载本页</button>
           </div>
         </aside>
       </section>
@@ -344,6 +358,8 @@
     </form>
   </dialog>
 
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
   <script type="module" src="./app.js"></script>
 </body>
 </html>
