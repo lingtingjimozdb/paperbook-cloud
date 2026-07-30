@@ -69,7 +69,7 @@ import java.util.zip.ZipOutputStream;
 
 public class MainActivity extends Activity {
     private static final String APP_URL =
-            "https://lingtingjimozdb.github.io/paperbook-cloud/?app=android&v=11";
+            "https://lingtingjimozdb.github.io/paperbook-cloud/?app=android&v=sidebar-v9";
     private static final int FILE_CHOOSER_REQUEST = 1001;
     private static final int STORAGE_PERMISSION_REQUEST = 1002;
     private static final int DOCUMENT_SCAN_REQUEST = 1003;
@@ -176,7 +176,7 @@ public class MainActivity extends Activity {
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setUserAgentString(
-                settings.getUserAgentString() + " PaperBookAndroid/6.0-Voice-Studio"
+            settings.getUserAgentString() + " PaperBookAndroid/9.0-Complete"
         );
 
         CookieManager cookieManager = CookieManager.getInstance();
