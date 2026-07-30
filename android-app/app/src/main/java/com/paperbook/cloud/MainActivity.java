@@ -69,7 +69,7 @@ import java.util.zip.ZipOutputStream;
 
 public class MainActivity extends Activity {
     private static final String APP_URL =
-            "https://lingtingjimozdb.github.io/paperbook-cloud/?app=android&v=9";
+            "https://lingtingjimozdb.github.io/paperbook-cloud/?app=android&v=11";
     private static final int FILE_CHOOSER_REQUEST = 1001;
     private static final int STORAGE_PERMISSION_REQUEST = 1002;
     private static final int DOCUMENT_SCAN_REQUEST = 1003;
@@ -147,7 +147,8 @@ public class MainActivity extends Activity {
         );
         scannerParams.gravity = Gravity.END | Gravity.BOTTOM;
         scannerParams.setMargins(dp(12), dp(12), dp(14), dp(82));
-        root.addView(scannerButton, scannerParams);
+        // V5 uses the shared web scan entry. The native button remains available
+        // through AndroidBridge but is no longer added as a duplicate overlay.
 
         setContentView(root);
         configureWebView();
@@ -175,7 +176,7 @@ public class MainActivity extends Activity {
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setUserAgentString(
-                settings.getUserAgentString() + " PaperBookAndroid/2.0-Scanner"
+                settings.getUserAgentString() + " PaperBookAndroid/6.0-Voice-Studio"
         );
 
         CookieManager cookieManager = CookieManager.getInstance();
@@ -343,10 +344,9 @@ public class MainActivity extends Activity {
             Uri uri = request.getUrl();
             String host = uri.getHost();
 
-            if (host != null && (
-                    host.equals("lingtingjimozdb.github.io") ||
-                    host.endsWith(".supabase.co")
-            )) {
+            if (host != null && host.equals("lingtingjimozdb.github.io") &&
+                    uri.getPath() != null &&
+                    uri.getPath().startsWith("/paperbook-cloud/")) {
                 return false;
             }
 
@@ -366,7 +366,12 @@ public class MainActivity extends Activity {
         @Override
         public void onPageFinished(WebView view, String url) {
             progressBar.setVisibility(View.GONE);
-            injectMobileInterface();
+            Uri uri = Uri.parse(url);
+            if ("lingtingjimozdb.github.io".equals(uri.getHost()) &&
+                    uri.getPath() != null &&
+                    uri.getPath().startsWith("/paperbook-cloud/")) {
+                injectMobileInterface();
+            }
             CookieManager.getInstance().flush();
         }
 
@@ -1123,6 +1128,11 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void reloadApp() {
             runOnUiThread(() -> webView.loadUrl(APP_URL));
+        }
+
+        @JavascriptInterface
+        public void openScanner() {
+            runOnUiThread(() -> showScannerMenu());
         }
 
         @JavascriptInterface
