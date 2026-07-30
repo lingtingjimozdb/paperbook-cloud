@@ -29,15 +29,15 @@
       </div>
 
       <form id="authForm">
-        <label>账号名</label>
-        <input id="emailInput" type="text" autocomplete="username" required minlength="2" maxlength="32" placeholder="例如：dali奥特曼" />
+        <label>邮箱</label>
+        <input id="emailInput" type="email" autocomplete="email" required maxlength="254" placeholder="请输入常用邮箱" />
         <label>密码</label>
         <input id="passwordInput" type="password" autocomplete="current-password" required minlength="6" placeholder="至少 6 位" />
         <button id="authSubmit" class="primary full" type="submit">登录</button>
       </form>
 
-      <button id="forgotBtn" class="link-btn">账号使用说明</button>
-      <p class="auth-tip">无需 QQ 邮箱和验证码。输入账号名与密码即可注册；电脑和手机使用同一账号会访问同一云端笔记。</p>
+      <button id="forgotBtn" class="link-btn">忘记密码？通过邮箱重置</button>
+      <p class="auth-tip">请使用真实可接收邮件的邮箱注册。注册确认、忘记密码和安全通知都会发送到该邮箱。</p>
     </div>
   </section>
 
@@ -63,6 +63,7 @@
           <button id="exportBtn">导出备份</button>
           <button id="importBtn">导入备份</button>
         </div>
+        <button id="changePasswordBtn">修改密码</button>
         <button id="logoutBtn" class="danger logout-button">退出登录</button>
       </div>
     </aside>
@@ -145,6 +146,7 @@
     <button id="moreThemeBtn">◐ 切换主题</button>
     <button id="moreExportBtn">⇩ 导出备份</button>
     <button id="moreImportBtn">⇧ 导入备份</button>
+    <button id="moreChangePasswordBtn">修改密码</button>
     <button id="moreLogoutBtn" class="danger sheet-logout">退出登录</button>
   </section>
 
@@ -351,6 +353,32 @@
         </aside>
       </section>
     </div>
+  </dialog>
+
+  <dialog id="forgotPasswordDialog" class="account-dialog">
+    <form method="dialog">
+      <h3>通过邮箱重置密码</h3>
+      <p>我们会向注册邮箱发送安全重置链接。</p>
+      <label>注册邮箱<input id="forgotEmailInput" type="email" autocomplete="email" required placeholder="name@example.com" /></label>
+      <div class="dialog-actions">
+        <button value="cancel">取消</button>
+        <button id="sendResetEmailBtn" value="default" class="primary">发送重置邮件</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="passwordDialog" class="account-dialog">
+    <form method="dialog">
+      <h3 id="passwordDialogTitle">设置新密码</h3>
+      <p id="passwordDialogHelp">新密码至少 8 位，建议同时包含字母和数字。</p>
+      <label id="currentPasswordLabel">当前密码<input id="currentPasswordInput" type="password" autocomplete="current-password" minlength="6" /></label>
+      <label>新密码<input id="newPasswordInput" type="password" autocomplete="new-password" minlength="8" required /></label>
+      <label>确认新密码<input id="confirmPasswordInput" type="password" autocomplete="new-password" minlength="8" required /></label>
+      <div class="dialog-actions">
+        <button value="cancel">取消</button>
+        <button id="confirmPasswordBtn" value="default" class="primary">确认修改</button>
+      </div>
+    </form>
   </dialog>
 
   <dialog id="promptDialog">
